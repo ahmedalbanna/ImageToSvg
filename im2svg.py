@@ -492,6 +492,8 @@ def vectorize_line(
     stroke_color: str = "#000000",
     stroke_width_scale: float = 1.0,
     centerline: bool = True,
+    centerline_prune: int = 8,
+    centerline_rdp: float = 0.0,
 ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str, float]]]:
     """Return (paths_fill, paths_stroke).
     paths_fill: list of (path_d, fill_hex)
@@ -533,11 +535,13 @@ def vectorize_line(
         if line_output in ("stroke", "both"):
             if _HAS_SKIMAGE and centerline:
                 # Skeletonize and trace centerlines via graph tracing
-                centerlines = skeleton_centerlines(bin_img, prune_len=max(6, int(min_area**0.5)))
+                centerlines = skeleton_centerlines(bin_img, prune_len=max(int(centerline_prune), int(min_area**0.5)))
                 dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
                 for sp in centerlines:
                     if len(sp) < 8:
                         continue
+                    if centerline_rdp and centerline_rdp > 0:
+                        sp = rdp_polyline(sp, centerline_rdp)
                     # Estimate width along skeleton polyline
                     xs = np.clip(sp[:,0].round().astype(int), 0, bin_img.shape[1]-1)
                     ys = np.clip(sp[:,1].round().astype(int), 0, bin_img.shape[0]-1)
@@ -736,6 +740,8 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--stroke-color", default="#000000", help="Stroke color for line mode")
     p.add_argument("--stroke-width-scale", type=float, default=1.0, help="Scale factor for estimated stroke width")
     p.add_argument("--no-centerline", action="store_true", help="Disable skeletonized centerline stroke tracing")
+    p.add_argument("--centerline-prune", type=int, default=8, help="Prune centerline paths shorter than this length (pixels)")
+    p.add_argument("--centerline-rdp", type=float, default=0.0, help="RDP simplify epsilon for centerline polylines (0 disables)")
 
     # Low-poly mode options
     p.add_argument("--points", type=int, default=1000, help="Number of feature/sample points for low-poly mode")
@@ -784,6 +790,8 @@ def main(argv: List[str]) -> int:
             stroke_color=str(args.stroke_color),
             stroke_width_scale=float(args.stroke_width_scale),
             centerline=not bool(args.no_centerline),
+            centerline_prune=int(args.centerline_prune),
+            centerline_rdp=float(args.centerline_rdp),
         )
         write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=paths_stroke, fill_rule=args.fill_rule)
     else:  # lowpoly
