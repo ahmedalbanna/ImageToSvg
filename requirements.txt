@@ -1,3 +1,5 @@
 opencv-python-headless
 numpy
 svgwrite
+scipy; platform_system != 'Windows' and platform_machine != 'aarch64' # optional for Delaunay
+scikit-image # for skeletonization

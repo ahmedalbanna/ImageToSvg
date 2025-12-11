@@ -539,9 +539,44 @@ def write_svg(
 
 def parse_args(argv: List[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Convert raster images to SVG without AI.")
+
+    def apply_quality(ns: argparse.Namespace):
+        if not getattr(ns, "quality", None):
+            return ns
+        q = ns.quality
+        # Defaults that we may override; we only set if user didn't explicitly pass
+        def set_if_none(name, val):
+            if getattr(ns, name) == p.get_default(name):
+                setattr(ns, name, val)
+        if q == "low":
+            set_if_none("epsilon", 0.006)
+            set_if_none("bezier", True)
+            set_if_none("bezier_recursive", False)
+            set_if_none("bezier_seglen", 24)
+            set_if_none("bezier_maxerr", 2.5)
+            if getattr(ns, "mode", "flat") == "flat":
+                set_if_none("colors", 6)
+        elif q == "medium":
+            set_if_none("epsilon", 0.003)
+            set_if_none("bezier", True)
+            set_if_none("bezier_recursive", True)
+            set_if_none("bezier_seglen", 16)
+            set_if_none("bezier_maxerr", 1.8)
+            if getattr(ns, "mode", "flat") == "flat":
+                set_if_none("colors", 8)
+        elif q == "high":
+            set_if_none("epsilon", 0.0015)
+            set_if_none("bezier", True)
+            set_if_none("bezier_recursive", True)
+            set_if_none("bezier_seglen", 10)
+            set_if_none("bezier_maxerr", 1.0)
+            if getattr(ns, "mode", "flat") == "flat":
+                set_if_none("colors", 12)
+        return ns
     p.add_argument("input", help="Input image path (png/jpg/etc)")
     p.add_argument("-o", "--output", required=True, help="Output SVG path")
     p.add_argument("--mode", choices=["flat", "line", "lowpoly"], default="flat", help="Vectorization mode")
+    p.add_argument("--quality", choices=["low","medium","high"], help="Quality preset that sets smoothing and detail parameters (overrides related flags)")
 
     # Flat mode
     p.add_argument("--colors", type=int, default=8, help="Number of colors for quantization (flat mode)")
@@ -572,7 +607,9 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--points", type=int, default=1000, help="Number of feature/sample points for low-poly mode")
     p.add_argument("--tri-blur", type=int, default=1, help="Box blur radius before sampling (low-poly)")
 
-    return p.parse_args(argv)
+    ns = p.parse_args(argv)
+    ns = apply_quality(ns)
+    return ns
 
 
 def main(argv: List[str]) -> int:
