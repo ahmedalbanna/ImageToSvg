@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover
 # --------------- Utilities ---------------
 
 # Bezier fitting: simple chord-length parameterization + least-squares cubic fit per segment.
-# This is a pragmatic, lightweight fitter; for complex shapes consider Schneider's algorithm.
+# Also provides a recursive error-based splitter (Schneider-style) for better corner preservation.
 
 def _fit_cubic_bezier(points: np.ndarray) -> Optional[np.ndarray]:
     """Fit a single cubic Bezier to a sequence of points (Nx2) using chord-length parameterization.
@@ -162,6 +162,50 @@ def simplify_poly(contour: np.ndarray, epsilon_ratio: float = 0.002) -> np.ndarr
     return approx[:, 0, :].astype(np.float32)
 
 
+def max_poly_error(poly: np.ndarray, bezier: np.ndarray) -> float:
+    """Compute maximum point-to-Bezier distance as an error metric."""
+    if poly is None or len(poly) == 0:
+        return 0.0
+    # Sample the Bezier finely
+    ts = np.linspace(0, 1, num=64)
+    P0, P1, P2, P3 = [bezier[i] for i in range(4)]
+    B = (1-ts)[:,None]**3 * P0 + 3*(1-ts)[:,None]**2*ts[:,None] * P1 + 3*(1-ts)[:,None]*ts[:,None]**2 * P2 + ts[:,None]**3 * P3
+    # Distances from poly points to closest Bezier sample
+    d = np.min(np.linalg.norm(poly[:,None,:] - B[None,:,:], axis=2), axis=1)
+    return float(d.max())
+
+
+def recursive_fit_beziers(points: np.ndarray, max_err: float = 2.0, min_seg: int = 6) -> List[np.ndarray]:
+    """Recursively split polyline and fit cubic Beziers where error exceeds threshold.
+    max_err in pixels. Returns list of cubic Bezier segments.
+    """
+    pts = points.astype(np.float64)
+    n = len(pts)
+    if n <= 1:
+        return []
+    if n <= min_seg:
+        bz = _fit_cubic_bezier(pts)
+        return [bz] if bz is not None else []
+    bz = _fit_cubic_bezier(pts)
+    if bz is None:
+        # fallback: split in half
+        mid = n // 2
+        return recursive_fit_beziers(pts[:mid+1], max_err, min_seg) + recursive_fit_beziers(pts[mid:], max_err, min_seg)
+    err = max_poly_error(pts, bz)
+    if err <= max_err:
+        return [bz]
+    # Split at point of max deviation
+    ts = np.linspace(0, 1, num=n)
+    P0, P1, P2, P3 = bz
+    B = (1-ts)[:,None]**3 * P0 + 3*(1-ts)[:,None]**2*ts[:,None] * P1 + 3*(1-ts)[:,None]*ts[:,None]**2 * P2 + ts[:,None]**3 * P3
+    d = np.linalg.norm(pts - B, axis=1)
+    split_idx = int(np.argmax(d))
+    split_idx = max(2, min(n-3, split_idx))  # ensure both sides have >=2 points
+    left = recursive_fit_beziers(pts[:split_idx+1], max_err, min_seg)
+    right = recursive_fit_beziers(pts[split_idx:], max_err, min_seg)
+    return left + right
+
+
 # --------------- Flat-color pipeline ---------------
 
 def kmeans_quantize_bgr(img_bgr: np.ndarray, k: int = 8, attempts: int = 3) -> Tuple[np.ndarray, np.ndarray]:
@@ -244,7 +288,10 @@ def vectorize_flat(
             if len(approx) < 2:
                 continue
             if bezier:
-                beziers = polyline_to_beziers(approx, seg_len=bezier_seglen)
+                if bezier_recursive:
+                    beziers = recursive_fit_beziers(approx, max_err=bezier_maxerr, min_seg=max(6, int(bezier_seglen)))
+                else:
+                    beziers = polyline_to_beziers(approx, seg_len=bezier_seglen)
                 d = beziers_to_path_d(beziers, closed=True)
             else:
                 d = to_svg_path_d(approx, closed=True)
@@ -295,7 +342,16 @@ def vectorize_line(
     close_kernel: int = 3,
     bezier: bool = False,
     bezier_seglen: int = 16,
-) -> List[Tuple[str, str, str]]:
+    bezier_recursive: bool = False,
+    bezier_maxerr: float = 2.0,
+    line_output: str = "fill",
+    stroke_color: str = "#000000",
+    stroke_width_scale: float = 1.0,
+) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str, float]]]:
+    """Return (paths_fill, paths_stroke).
+    paths_fill: list of (path_d, fill_hex)
+    paths_stroke: list of (path_d, stroke_hex, stroke_width)
+    """
     """Return list of (path_d, fill_hex, stroke_hex). By default emit filled shapes (stroke none)."""
     bin_img = threshold_line_art(img_bgr, adaptive=adaptive, thresh=thresh, invert=invert, blur=blur)
 
@@ -305,9 +361,10 @@ def vectorize_line(
         bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE, kernel, iterations=1)
 
     contours, hierarchy = cv2.findContours(bin_img, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
-    paths = []
+    paths_fill: List[Tuple[str, str]] = []
+    paths_stroke: List[Tuple[str, str, float]] = []
     if not contours:
-        return paths
+        return paths_fill, paths_stroke
 
     for cnt in contours:
         if cv2.contourArea(cnt) < min_area:
@@ -316,15 +373,33 @@ def vectorize_line(
         if len(approx) < 2:
             continue
         if bezier:
-            beziers = polyline_to_beziers(approx, seg_len=bezier_seglen)
+            if bezier_recursive:
+                beziers = recursive_fit_beziers(approx, max_err=bezier_maxerr, min_seg=max(6, int(bezier_seglen)))
+            else:
+                beziers = polyline_to_beziers(approx, seg_len=bezier_seglen)
             d = beziers_to_path_d(beziers, closed=True)
         else:
             d = to_svg_path_d(approx, closed=True)
         if not d:
             continue
-        # For line-art, we typically fill with black
-        paths.append((d, "#000000", "none"))
-    return paths
+        if line_output in ("fill", "both"):
+            paths_fill.append((d, "#000000"))
+        # Optionally add stroke version using width estimation
+        if line_output in ("stroke", "both"):
+            # Width estimation via distance transform near boundary
+            dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
+            # Sample median distance along this contour's mask
+            mask = np.zeros_like(bin_img)
+            cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
+            vals = dist[mask == 255]
+            if len(vals) == 0:
+                width = 1.0
+            else:
+                width = float(np.median(vals) * 2.0)
+            width *= float(stroke_width_scale)
+            paths_stroke.append((d, stroke_color, max(0.5, width)))
+
+    return paths_fill, paths_stroke
 
 
 # --------------- Low-poly pipeline ---------------
@@ -452,6 +527,13 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     # Bezier options (flat/line)
     p.add_argument("--bezier", action="store_true", help="Fit cubic Beziers for smoother curves")
     p.add_argument("--bezier-seglen", type=int, default=16, help="Polyline points per Bezier segment")
+    p.add_argument("--bezier-recursive", action="store_true", help="Use recursive error-based Bezier splitting")
+    p.add_argument("--bezier-maxerr", type=float, default=2.0, help="Max fitting error (px) for recursive Bezier")
+
+    # Line output style
+    p.add_argument("--line-output", choices=["fill","stroke","both"], default="fill", help="How to render line mode")
+    p.add_argument("--stroke-color", default="#000000", help="Stroke color for line mode")
+    p.add_argument("--stroke-width-scale", type=float, default=1.0, help="Scale factor for estimated stroke width")
 
     # Low-poly mode options
     p.add_argument("--points", type=int, default=1000, help="Number of feature/sample points for low-poly mode")
@@ -481,7 +563,7 @@ def main(argv: List[str]) -> int:
         )
         write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=None, fill_rule=args.fill_rule)
     elif args.mode == "line":  # line
-        paths = vectorize_line(
+        paths_fill, paths_stroke = vectorize_line(
             img_bgr,
             adaptive=bool(args.adaptive),
             thresh=int(args.thresh),
@@ -492,10 +574,13 @@ def main(argv: List[str]) -> int:
             close_kernel=max(0, int(args.close_kernel)),
             bezier=bool(args.bezier),
             bezier_seglen=max(4, int(args.bezier_seglen)),
+            bezier_recursive=bool(args.bezier_recursive),
+            bezier_maxerr=float(args.bezier_maxerr),
+            line_output=str(args.line_output),
+            stroke_color=str(args.stroke_color),
+            stroke_width_scale=float(args.stroke_width_scale),
         )
-        # Convert to fill-only list
-        paths_fill = [(d, fill) for (d, fill, _stroke) in paths]
-        write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=None, fill_rule=args.fill_rule)
+        write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=paths_stroke, fill_rule=args.fill_rule)
     else:  # lowpoly
         polygons = lowpoly(img_bgr, num_points=int(args.points), blur=int(args.tri_blur))
         write_svg(args.output, w, h, paths_fill=[], polygons=polygons, fill_rule=args.fill_rule)
