@@ -212,6 +212,143 @@ def recursive_fit_beziers(points: np.ndarray, max_err: float = 2.0, min_seg: int
     right = recursive_fit_beziers(pts[split_idx:], max_err, min_seg)
     return left + right
 
+# ---------------- Skeleton graph extraction ----------------
+
+def _neighbors8(y: int, x: int, h: int, w: int):
+    for dy in (-1,0,1):
+        for dx in (-1,0,1):
+            if dy == 0 and dx == 0:
+                continue
+            ny, nx = y+dy, x+dx
+            if 0 <= ny < h and 0 <= nx < w:
+                yield ny, nx
+
+
+def _degree(img: np.ndarray, y: int, x: int) -> int:
+    h, w = img.shape
+    deg = 0
+    for ny, nx in _neighbors8(y, x, h, w):
+        if img[ny, nx]:
+            deg += 1
+    return deg
+
+
+def skeleton_centerlines(bin_img: np.ndarray, prune_len: int = 8) -> List[np.ndarray]:
+    """Convert a binary mask to skeleton centerline polylines via graph tracing.
+    prune_len: remove short spur paths shorter than this many pixels.
+    Returns list of polylines (N,2) float32.
+    """
+    if not _HAS_SKIMAGE:
+        return []
+    skel = skeletonize((bin_img > 0).astype(np.uint8)).astype(np.uint8)
+    h, w = skel.shape
+    visited = np.zeros_like(skel, dtype=np.uint8)
+
+    # Identify junctions (deg >= 3) and endpoints (deg == 1)
+    junctions = set()
+    endpoints = set()
+    for y in range(h):
+        for x in range(w):
+            if not skel[y, x]:
+                continue
+            deg = _degree(skel, y, x)
+            if deg == 1:
+                endpoints.add((y, x))
+            elif deg >= 3:
+                junctions.add((y, x))
+
+    def trace_from(start: tuple) -> List[tuple]:
+        path = [start]
+        y, x = start
+        prev = None
+        while True:
+            visited[y, x] = 1
+            # Explore neighbors
+            nbrs = []
+            for ny, nx in _neighbors8(y, x, h, w):
+                if not skel[ny, nx] or visited[ny, nx]:
+                    continue
+                if prev is not None and (ny, nx) == prev:
+                    continue
+                nbrs.append((ny, nx))
+            if not nbrs:
+                break
+            # If at junction, stop path and let another trace handle branches
+            if (y, x) in junctions and (y, x) != start:
+                break
+            # Choose the next neighbor (prefer straightest by simple heuristic)
+            if prev is None:
+                nxt = nbrs[0]
+            else:
+                vy, vx = y - prev[0], x - prev[1]
+                best, bestdot = None, -1e9
+                for cand in nbrs:
+                    wy, wx = cand[0]-y, cand[1]-x
+                    dot = vy*wy + vx*wx
+                    if dot > bestdot:
+                        bestdot = dot
+                        best = cand
+                nxt = best if best is not None else nbrs[0]
+            prev = (y, x)
+            y, x = nxt
+            path.append((y, x))
+            # Stop if we hit endpoint
+            if (y, x) in endpoints:
+                visited[y, x] = 1
+                break
+        return path
+
+    polylines: List[np.ndarray] = []
+    # Start traces from endpoints for maximal path coverage
+    for start in endpoints:
+        y, x = start
+        if not skel[y, x] or visited[y, x]:
+            continue
+        path = trace_from(start)
+        if len(path) >= prune_len:
+            pts = np.array([(p[1], p[0]) for p in path], dtype=np.float32)  # (x,y)
+            polylines.append(pts)
+
+    # For remaining unvisited pixels (loops without endpoints), pick junctions or any pixel
+    for y in range(h):
+        for x in range(w):
+            if skel[y, x] and not visited[y, x]:
+                path = trace_from((y, x))
+                if len(path) >= prune_len:
+                    pts = np.array([(p[1], p[0]) for p in path], dtype=np.float32)
+                    polylines.append(pts)
+
+    return polylines
+
+
+def rdp_polyline(points: np.ndarray, epsilon: float) -> np.ndarray:
+    """Ramer–Douglas–Peucker on a 2D polyline."""
+    if len(points) < 3:
+        return points
+    # Find farthest point from the line p0-pn
+    p0 = points[0]
+    pn = points[-1]
+    v = pn - p0
+    v2 = v[0]*v[0] + v[1]*v[1]
+    maxd = -1.0
+    maxi = -1
+    for i in range(1, len(points)-1):
+        wv = points[i] - p0
+        if v2 == 0:
+            d = np.linalg.norm(points[i]-p0)
+        else:
+            # area of parallelogram over base length
+            d = abs(v[0]*wv[1] - v[1]*wv[0]) / np.sqrt(v2)
+        if d > maxd:
+            maxd = d
+            maxi = i
+    if maxd > epsilon:
+        left = rdp_polyline(points[:maxi+1], epsilon)
+        right = rdp_polyline(points[maxi:], epsilon)
+        return np.vstack([left[:-1], right])
+    else:
+        return np.vstack([p0, pn])
+
 
 # --------------- Flat-color pipeline ---------------
 
@@ -395,15 +532,12 @@ def vectorize_line(
         # Optionally add stroke version
         if line_output in ("stroke", "both"):
             if _HAS_SKIMAGE and centerline:
-                # Skeletonize and trace centerlines to polylines
-                skel = skeletonize((bin_img > 0).astype(np.uint8)).astype(np.uint8) * 255
-                # Find skeleton contours as polylines
-                sk_contours, _ = cv2.findContours(skel, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+                # Skeletonize and trace centerlines via graph tracing
+                centerlines = skeleton_centerlines(bin_img, prune_len=max(6, int(min_area**0.5)))
                 dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
-                for sc in sk_contours:
-                    if len(sc) < 8:
+                for sp in centerlines:
+                    if len(sp) < 8:
                         continue
-                    sp = sc[:,0,:].astype(np.float32)
                     # Estimate width along skeleton polyline
                     xs = np.clip(sp[:,0].round().astype(int), 0, bin_img.shape[1]-1)
                     ys = np.clip(sp[:,1].round().astype(int), 0, bin_img.shape[0]-1)
