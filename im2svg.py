@@ -33,6 +33,13 @@ try:
 except Exception:  # pragma: no cover
     _HAS_SCIPY = False
 
+# Skeletonization for centerline tracing
+try:
+    from skimage.morphology import skeletonize  # type: ignore
+    _HAS_SKIMAGE = True
+except Exception:  # pragma: no cover
+    _HAS_SKIMAGE = False
+
 # --------------- Utilities ---------------
 
 # Bezier fitting: simple chord-length parameterization + least-squares cubic fit per segment.
@@ -347,6 +354,7 @@ def vectorize_line(
     line_output: str = "fill",
     stroke_color: str = "#000000",
     stroke_width_scale: float = 1.0,
+    centerline: bool = True,
 ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str, float]]]:
     """Return (paths_fill, paths_stroke).
     paths_fill: list of (path_d, fill_hex)
@@ -384,20 +392,44 @@ def vectorize_line(
             continue
         if line_output in ("fill", "both"):
             paths_fill.append((d, "#000000"))
-        # Optionally add stroke version using width estimation
+        # Optionally add stroke version
         if line_output in ("stroke", "both"):
-            # Width estimation via distance transform near boundary
-            dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
-            # Sample median distance along this contour's mask
-            mask = np.zeros_like(bin_img)
-            cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
-            vals = dist[mask == 255]
-            if len(vals) == 0:
-                width = 1.0
+            if _HAS_SKIMAGE and centerline:
+                # Skeletonize and trace centerlines to polylines
+                skel = skeletonize((bin_img > 0).astype(np.uint8)).astype(np.uint8) * 255
+                # Find skeleton contours as polylines
+                sk_contours, _ = cv2.findContours(skel, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+                dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
+                for sc in sk_contours:
+                    if len(sc) < 8:
+                        continue
+                    sp = sc[:,0,:].astype(np.float32)
+                    # Estimate width along skeleton polyline
+                    xs = np.clip(sp[:,0].round().astype(int), 0, bin_img.shape[1]-1)
+                    ys = np.clip(sp[:,1].round().astype(int), 0, bin_img.shape[0]-1)
+                    widths = dist[ys, xs] * 2.0
+                    width = float(np.median(widths)) if len(widths) else 1.0
+                    width *= float(stroke_width_scale)
+                    # Optional curve smoothing of centerline
+                    if bezier:
+                        if bezier_recursive:
+                            beziers = recursive_fit_beziers(sp, max_err=bezier_maxerr, min_seg=max(6, int(bezier_seglen)))
+                        else:
+                            beziers = polyline_to_beziers(sp, seg_len=bezier_seglen)
+                        sd = beziers_to_path_d(beziers, closed=False)
+                    else:
+                        sd = to_svg_path_d(sp, closed=False)
+                    if sd:
+                        paths_stroke.append((sd, stroke_color, max(0.5, width)))
             else:
-                width = float(np.median(vals) * 2.0)
-            width *= float(stroke_width_scale)
-            paths_stroke.append((d, stroke_color, max(0.5, width)))
+                # Fallback: stroke the outer contour path with width estimation
+                dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
+                mask = np.zeros_like(bin_img)
+                cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
+                vals = dist[mask == 255]
+                width = float(np.median(vals) * 2.0) if len(vals) else 1.0
+                width *= float(stroke_width_scale)
+                paths_stroke.append((d, stroke_color, max(0.5, width)))
 
     return paths_fill, paths_stroke
 
@@ -534,6 +566,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--line-output", choices=["fill","stroke","both"], default="fill", help="How to render line mode")
     p.add_argument("--stroke-color", default="#000000", help="Stroke color for line mode")
     p.add_argument("--stroke-width-scale", type=float, default=1.0, help="Scale factor for estimated stroke width")
+    p.add_argument("--no-centerline", action="store_true", help="Disable skeletonized centerline stroke tracing")
 
     # Low-poly mode options
     p.add_argument("--points", type=int, default=1000, help="Number of feature/sample points for low-poly mode")
@@ -579,6 +612,7 @@ def main(argv: List[str]) -> int:
             line_output=str(args.line_output),
             stroke_color=str(args.stroke_color),
             stroke_width_scale=float(args.stroke_width_scale),
+            centerline=not bool(args.no_centerline),
         )
         write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=paths_stroke, fill_rule=args.fill_rule)
     else:  # lowpoly
