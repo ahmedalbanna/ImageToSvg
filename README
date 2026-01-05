@@ -1,0 +1,1 @@
+uvicorn app:app --host 185.190.140.93 --port 9003

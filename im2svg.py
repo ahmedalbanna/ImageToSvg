@@ -397,6 +397,8 @@ def vectorize_flat(
     fill_rule: str = "evenodd",
     bezier: bool = False,
     bezier_seglen: int = 16,
+    bezier_recursive: bool = False,
+    bezier_maxerr: float = 2.0,
 ) -> List[Tuple[str, str]]:
     """Return list of (path_d, fill_hex) for flat-color vectorization.
     If --bezier is used, output paths are cubic Beziers instead of polylines.
@@ -639,16 +641,13 @@ def lowpoly(img_bgr: np.ndarray, num_points: int = 1000, blur: int = 1):
 
 # --------------- SVG writer ---------------
 
-def write_svg(
-    output_path: str,
-    width: int,
-    height: int,
-    paths_fill: List[Tuple[str, str]],
-    paths_stroke: List[Tuple[str, str, float]] = None,
-    fill_rule: str = "evenodd",
-    polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None,
-):
-    dwg = svgwrite.Drawing(output_path, size=(width, height), viewBox=f"0 0 {width} {height}")
+def _build_svg(width: int,
+               height: int,
+               paths_fill: List[Tuple[str, str]],
+               paths_stroke: Optional[List[Tuple[str, str, float]]] = None,
+               fill_rule: str = "evenodd",
+               polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None) -> svgwrite.Drawing:
+    dwg = svgwrite.Drawing(size=(width, height), viewBox=f"0 0 {width} {height}")
     dwg.attribs["shape-rendering"] = "geometricPrecision"
 
     # Filled paths
@@ -669,8 +668,32 @@ def write_svg(
     if polygons:
         for pts, fill_hex in polygons:
             dwg.add(dwg.polygon(points=pts, fill=fill_hex, stroke="none"))
+    return dwg
 
+
+def write_svg(
+    output_path: str,
+    width: int,
+    height: int,
+    paths_fill: List[Tuple[str, str]],
+    paths_stroke: List[Tuple[str, str, float]] = None,
+    fill_rule: str = "evenodd",
+    polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None,
+):
+    dwg = _build_svg(width, height, paths_fill, paths_stroke, fill_rule, polygons)
+    dwg.filename = output_path
     dwg.save()
+
+
+def build_svg_string(width: int,
+                     height: int,
+                     paths_fill: List[Tuple[str, str]],
+                     paths_stroke: Optional[List[Tuple[str, str, float]]] = None,
+                     fill_rule: str = "evenodd",
+                     polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None) -> str:
+    """Build an SVG string for embedding or API responses."""
+    dwg = _build_svg(width, height, paths_fill, paths_stroke, fill_rule, polygons)
+    return dwg.tostring()
 
 
 # --------------- CLI ---------------
@@ -762,15 +785,17 @@ def main(argv: List[str]) -> int:
 
     if args.mode == "flat":
         paths_fill = vectorize_flat(
-            img_bgr,
-            k_colors=max(2, int(args.colors)),
-            min_area=max(1, int(args.min_area)),
-            epsilon_ratio=max(1e-5, float(args.epsilon)),
-            close_kernel=max(0, int(args.close_kernel)),
-            fill_rule=args.fill_rule,
-            bezier=bool(args.bezier),
-            bezier_seglen=max(4, int(args.bezier_seglen)),
-        )
+           img_bgr,
+           k_colors=max(2, int(args.colors)),
+           min_area=max(1, int(args.min_area)),
+           epsilon_ratio=max(1e-5, float(args.epsilon)),
+           close_kernel=max(0, int(args.close_kernel)),
+           fill_rule=args.fill_rule,
+           bezier=bool(args.bezier),
+           bezier_seglen=max(4, int(args.bezier_seglen)),
+           bezier_recursive=bool(args.bezier_recursive),
+           bezier_maxerr=float(args.bezier_maxerr),
+       )
         write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=None, fill_rule=args.fill_rule)
     elif args.mode == "line":  # line
         paths_fill, paths_stroke = vectorize_line(
