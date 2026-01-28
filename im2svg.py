@@ -1796,6 +1796,272 @@ def create_drop_shadow_filter(filter_id: str = "shadow", blur: float = 2.0, opac
   </filter>'''
 
 
+# --------------- Color Palette Extraction ---------------
+
+def extract_color_palette(img_bgr: np.ndarray, 
+                         num_colors: int = 5,
+                         method: str = "kmeans",
+                         min_percentage: float = 1.0) -> list:
+    """Extract dominant colors from image.
+    
+    Args:
+        img_bgr: Input BGR image
+        num_colors: Number of colors to extract
+        method: Extraction method ('kmeans', 'median_cut', 'histogram')
+        min_percentage: Minimum percentage threshold for color inclusion
+    
+    Returns:
+        List of dicts with color info: [{'color': [B,G,R], 'hex': '#rrggbb', 
+                                         'percentage': 12.5, 'count': 1234}, ...]
+    """
+    h, w = img_bgr.shape[:2]
+    total_pixels = h * w
+    
+    # Reshape image to list of pixels
+    pixels = img_bgr.reshape(-1, 3)
+    
+    if method == "kmeans":
+        # K-means clustering
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 200, 0.1)
+        _, labels, centers = cv2.kmeans(
+            pixels.astype(np.float32),
+            num_colors,
+            None,
+            criteria,
+            10,
+            cv2.KMEANS_PP_CENTERS
+        )
+        centers = centers.astype(np.uint8)
+        
+        # Count pixels for each cluster
+        unique_labels, counts = np.unique(labels, return_counts=True)
+        
+        palette = []
+        for i, center in enumerate(centers):
+            if i in unique_labels:
+                count = counts[list(unique_labels).index(i)]
+                percentage = (count / total_pixels) * 100
+                
+                if percentage >= min_percentage:
+                    palette.append({
+                        'color': center.tolist(),
+                        'hex': bgr_to_hex(center),
+                        'rgb': [int(center[2]), int(center[1]), int(center[0])],
+                        'percentage': float(percentage),
+                        'count': int(count)
+                    })
+        
+    elif method == "median_cut":
+        # Use median cut algorithm
+        quant_img, _ = median_cut_quantize(img_bgr, k=num_colors)
+        
+        # Count unique colors
+        unique_colors, counts = np.unique(
+            quant_img.reshape(-1, 3),
+            axis=0,
+            return_counts=True
+        )
+        
+        palette = []
+        for color, count in zip(unique_colors, counts):
+            percentage = (count / total_pixels) * 100
+            if percentage >= min_percentage:
+                palette.append({
+                    'color': color.tolist(),
+                    'hex': bgr_to_hex(color),
+                    'rgb': [int(color[2]), int(color[1]), int(color[0])],
+                    'percentage': float(percentage),
+                    'count': int(count)
+                })
+    
+    elif method == "histogram":
+        # Histogram-based extraction
+        # Quantize to reduce color space
+        levels = 64  # Reduce 256 levels to 64
+        quantized = (pixels // (256 // levels)) * (256 // levels)
+        
+        # Count unique colors
+        unique_colors, counts = np.unique(quantized, axis=0, return_counts=True)
+        
+        # Sort by count and take top N
+        sorted_indices = np.argsort(-counts)[:num_colors]
+        
+        palette = []
+        for idx in sorted_indices:
+            color = unique_colors[idx]
+            count = counts[idx]
+            percentage = (count / total_pixels) * 100
+            
+            if percentage >= min_percentage:
+                palette.append({
+                    'color': color.tolist(),
+                    'hex': bgr_to_hex(color),
+                    'rgb': [int(color[2]), int(color[1]), int(color[0])],
+                    'percentage': float(percentage),
+                    'count': int(count)
+                })
+    
+    # Sort by percentage (descending)
+    palette.sort(key=lambda x: x['percentage'], reverse=True)
+    
+    return palette
+
+
+def analyze_color_temperature(rgb: list) -> str:
+    """Analyze if color is warm, cool, or neutral.
+    
+    Args:
+        rgb: RGB color [R, G, B]
+    
+    Returns:
+        Temperature string: 'warm', 'cool', or 'neutral'
+    """
+    r, g, b = rgb
+    
+    # Simple heuristic
+    if r > b + 20:
+        return 'warm'
+    elif b > r + 20:
+        return 'cool'
+    else:
+        return 'neutral'
+
+
+def rgb_to_hsl(rgb: list) -> list:
+    """Convert RGB to HSL color space.
+    
+    Args:
+        rgb: RGB color [R, G, B] (0-255)
+    
+    Returns:
+        HSL color [H, S, L] where H is 0-360, S and L are 0-100
+    """
+    r, g, b = [x / 255.0 for x in rgb]
+    
+    max_c = max(r, g, b)
+    min_c = min(r, g, b)
+    l = (max_c + min_c) / 2.0
+    
+    if max_c == min_c:
+        h = s = 0.0
+    else:
+        diff = max_c - min_c
+        s = diff / (2.0 - max_c - min_c) if l > 0.5 else diff / (max_c + min_c)
+        
+        if max_c == r:
+            h = (g - b) / diff + (6.0 if g < b else 0.0)
+        elif max_c == g:
+            h = (b - r) / diff + 2.0
+        else:
+            h = (r - g) / diff + 4.0
+        
+        h /= 6.0
+    
+    return [h * 360, s * 100, l * 100]
+
+
+def export_palette_json(palette: list) -> str:
+    """Export palette as JSON string.
+    
+    Args:
+        palette: Color palette from extract_color_palette
+    
+    Returns:
+        JSON string
+    """
+    import json
+    return json.dumps(palette, indent=2)
+
+
+def export_palette_css(palette: list, name: str = "palette") -> str:
+    """Export palette as CSS variables.
+    
+    Args:
+        palette: Color palette from extract_color_palette
+        name: Palette name for variable prefix
+    
+    Returns:
+        CSS string with custom properties
+    """
+    css = [":root {"]
+    
+    for i, color_info in enumerate(palette, 1):
+        hex_color = color_info['hex']
+        css.append(f"  --{name}-color-{i}: {hex_color};")
+    
+    css.append("}")
+    
+    return "\n".join(css)
+
+
+def export_palette_scss(palette: list, name: str = "palette") -> str:
+    """Export palette as SCSS variables.
+    
+    Args:
+        palette: Color palette from extract_color_palette
+        name: Palette name for variable prefix
+    
+    Returns:
+        SCSS string with variables
+    """
+    scss = []
+    
+    for i, color_info in enumerate(palette, 1):
+        hex_color = color_info['hex']
+        scss.append(f"${name}-color-{i}: {hex_color};")
+    
+    return "\n".join(scss)
+
+
+def export_palette_tailwind(palette: list, name: str = "palette") -> str:
+    """Export palette as Tailwind config.
+    
+    Args:
+        palette: Color palette from extract_color_palette
+        name: Palette name for color group
+    
+    Returns:
+        JavaScript object string for Tailwind config
+    """
+    lines = [f"  {name}: {{"]
+    
+    for i, color_info in enumerate(palette, 1):
+        hex_color = color_info['hex']
+        lines.append(f"    {i * 100}: '{hex_color}',")
+    
+    lines.append("  }")
+    
+    return "\n".join(lines)
+
+
+def generate_palette_html(palette: list, title: str = "Color Palette") -> str:
+    """Generate HTML preview of color palette.
+    
+    Args:
+        palette: Color palette from extract_color_palette
+        title: Title for the palette
+    
+    Returns:
+        HTML string with color swatches
+    """
+    html = [f'<div class="color-palette">']
+    html.append(f'  <h3>{title}</h3>')
+    html.append('  <div class="colors">')
+    
+    for color_info in palette:
+        hex_color = color_info['hex']
+        percentage = color_info['percentage']
+        html.append(f'    <div class="swatch" style="background-color: {hex_color};" title="{hex_color} ({percentage:.1f}%)">')
+        html.append(f'      <span>{hex_color}</span>')
+        html.append(f'      <span>{percentage:.1f}%</span>')
+        html.append('    </div>')
+    
+    html.append('  </div>')
+    html.append('</div>')
+    
+    return "\n".join(html)
+
+
 # --------------- SVG Optimization ---------------
 
 def optimize_path_data(path_d: str, precision: int = 2) -> str:

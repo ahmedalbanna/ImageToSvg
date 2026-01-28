@@ -103,6 +103,15 @@
 - `apply_cartoon_effect()` - Cartoon/cel-shading effect
 - `apply_artistic_filter()` - Unified filter interface
 
+**Color Palette Extraction**:
+- `extract_color_palette()` - Extract dominant colors (3 methods)
+- `export_palette_json()` - Export as JSON
+- `export_palette_css()` - Export as CSS custom properties
+- `export_palette_scss()` - Export as SCSS variables
+- `export_palette_tailwind()` - Export as Tailwind config
+- `rgb_to_hsl()` - RGB to HSL color conversion
+- `analyze_color_temperature()` - Warm/cool/neutral analysis
+
 **Enhanced Color Extraction**:
 - `extract_dominant_colors()` - Multi-method color extraction dispatcher
 - `median_cut_quantize()` - Median cut algorithm (6-7x faster than k-means)
@@ -1033,3 +1042,92 @@ app = FastAPI(debug=True)
 **Last Updated**: 2026-01-28
 **Maintainers**: Development Team
 **License**: MIT (assumed - add LICENSE file)
+
+## Color Palette Extraction
+
+### Available Extraction Methods
+
+**K-means Clustering** (default):
+- Uses k-means algorithm to find dominant colors
+- Balanced quality and performance
+- Good for most images
+- Returns colors with percentage distribution
+
+**Median Cut**:
+- Faster than k-means (6-7x)
+- Better for images with few distinct colors
+- Good color preservation
+- Ideal for logos and graphics
+
+**Histogram-based**:
+- Simple frequency counting
+- Very fast
+- Good for quick analysis
+- May miss subtle colors
+
+### Export Formats
+
+**JSON Format**:
+```json
+[
+  {
+    "color": [0, 0, 255],
+    "hex": "#ff0000",
+    "rgb": [255, 0, 0],
+    "percentage": 42.5,
+    "count": 12543
+  }
+]
+```
+
+**CSS Format**:
+```css
+:root {
+  --palette-color-1: #ff0000;
+  --palette-color-2: #00ff00;
+}
+```
+
+**SCSS Format**:
+```scss
+$palette-color-1: #ff0000;
+$palette-color-2: #00ff00;
+```
+
+**Tailwind Format**:
+```js
+brand: {
+  100: '#ff0000',
+  200: '#00ff00',
+}
+```
+
+### Usage
+
+```python
+from im2svg import extract_color_palette, export_palette_css
+
+# Extract palette
+palette = extract_color_palette(
+    img_bgr,
+    num_colors=5,           # Number of colors to extract
+    method="kmeans",        # or "median_cut", "histogram"
+    min_percentage=1.0      # Minimum percentage threshold
+)
+
+# Export in different formats
+json_output = export_palette_json(palette)
+css_output = export_palette_css(palette, name="brand")
+scss_output = export_palette_scss(palette, name="theme")
+tailwind_output = export_palette_tailwind(palette, name="primary")
+```
+
+### API Endpoint
+
+**POST /api/extract-palette**:
+- Parameters: `file`, `file_id`, `num_colors` (2-20), `method`, `export_format`
+- Returns: Color palette in requested format
+- Formats: json, css, scss, tailwind
+
+---
+

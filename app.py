@@ -17,6 +17,11 @@ from im2svg import (
     preprocess_image,
     apply_artistic_filter,
     optimize_svg_output,
+    extract_color_palette,
+    export_palette_json,
+    export_palette_css,
+    export_palette_scss,
+    export_palette_tailwind,
 )
 
 app = FastAPI(title="im2svg API", version="1.0")
@@ -222,3 +227,61 @@ async def api_convert(
         stream_svg(w, h, gen, fill_rule),
         media_type="image/svg+xml; charset=utf-8"
     )
+
+@app.post("/api/extract-palette")
+async def api_extract_palette(
+    file: Optional[UploadFile] = File(None),
+    file_id: Optional[str] = Form(None),
+    num_colors: int = Form(5),
+    method: str = Form("kmeans"),
+    export_format: str = Form("json"),
+):
+    """Extract color palette from image.
+    
+    Returns color palette in requested format.
+    """
+    # Get image
+    img = None
+    if file_id and file_id in IMAGE_CACHE:
+        img = IMAGE_CACHE[file_id]
+    elif file:
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is not None:
+            img_id = str(uuid.uuid4())
+            IMAGE_CACHE[img_id] = img
+    
+    if img is None:
+        return Response("Missing image or invalid file_id", status_code=400)
+    
+    # Extract palette
+    try:
+        palette = extract_color_palette(
+            img,
+            num_colors=max(2, min(20, int(num_colors))),
+            method=method if method in ["kmeans", "median_cut", "histogram"] else "kmeans",
+            min_percentage=0.5
+        )
+        
+        # Export in requested format
+        if export_format == "json":
+            content = export_palette_json(palette)
+            media_type = "application/json"
+        elif export_format == "css":
+            content = export_palette_css(palette)
+            media_type = "text/css"
+        elif export_format == "scss":
+            content = export_palette_scss(palette)
+            media_type = "text/plain"
+        elif export_format == "tailwind":
+            content = export_palette_tailwind(palette)
+            media_type = "text/plain"
+        else:
+            content = export_palette_json(palette)
+            media_type = "application/json"
+        
+        return Response(content=content, media_type=media_type)
+    
+    except Exception as e:
+        return Response(f"Palette extraction failed: {str(e)}", status_code=500)
