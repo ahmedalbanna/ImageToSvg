@@ -63,6 +63,12 @@ async def api_convert(
     sharpen: Optional[str] = Form(None),
     auto_crop: Optional[str] = Form(None),
     max_size: Optional[int] = Form(0),
+    # Advanced algorithm parameters
+    color_method: Optional[str] = Form("kmeans"),
+    adaptive_sampling: Optional[str] = Form(None),
+    edge_weight: Optional[float] = Form(0.7),
+    variable_width: Optional[str] = Form(None),
+    preserve_hierarchy: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     file_id: Optional[str] = Form(None),
     mode: str = Form("flat"),
@@ -149,6 +155,8 @@ async def api_convert(
             bezier_recursive=(bezier_recursive == "true"),
             bezier_maxerr=float(bezier_maxerr),
             smoothness=max(0, int(smoothness)),
+            color_method=str(color_method) if color_method else "kmeans",
+            detect_gradients=False,  # Future feature
         )
     elif mode == "line":
         gen = vectorize_line(
@@ -170,9 +178,17 @@ async def api_convert(
             centerline=(centerline == "true"),
             centerline_prune=int(centerline_prune),
             centerline_rdp=float(centerline_rdp),
+            variable_width=(variable_width == "true"),
+            preserve_hierarchy=(preserve_hierarchy == "true"),
         )
     elif mode == "lowpoly":
-        gen = lowpoly(img, num_points=int(points), blur=int(tri_blur))
+        gen = lowpoly(
+            img,
+            num_points=int(points),
+            blur=int(tri_blur),
+            adaptive_sampling=(adaptive_sampling == "true"),
+            edge_weight=float(edge_weight) if edge_weight else 0.7,
+        )
     else:
         return Response("Invalid mode", status_code=400)
 

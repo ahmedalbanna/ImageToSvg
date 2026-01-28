@@ -120,7 +120,7 @@ form.addEventListener('submit', async (e) => {
   const fd = new FormData(form);
   
   // Normalize checkbox values
-  ['adaptive', 'invert', 'bezier', 'bezier_recursive', 'centerline', 'preprocess', 'contrast', 'denoise', 'sharpen', 'auto_crop'].forEach(name => {
+  ['adaptive', 'invert', 'bezier', 'bezier_recursive', 'centerline', 'preprocess', 'contrast', 'denoise', 'sharpen', 'auto_crop', 'preserve_hierarchy', 'variable_width', 'adaptive_sampling'].forEach(name => {
     const checkbox = form.elements[name];
     if (checkbox) {
       fd.set(name, checkbox.checked ? 'true' : 'false');

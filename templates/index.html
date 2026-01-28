@@ -94,6 +94,13 @@
           <fieldset class="options-fieldset" id="flat-options">
             <legend>Flat Mode Options</legend>
             <label>
+              <span>Color Method:</span>
+              <select name="color_method">
+                <option value="kmeans">K-Means (default)</option>
+                <option value="median_cut">Median Cut</option>
+              </select>
+            </label>
+            <label>
               <span>Colors:</span>
               <input type="number" name="colors" value="8" min="2" max="64">
             </label>
@@ -125,6 +132,14 @@
           <!-- Line Options -->
           <fieldset class="options-fieldset" id="line-options" style="display: none;">
             <legend>Line Mode Options</legend>
+            <label class="checkbox-label">
+              <input type="checkbox" name="preserve_hierarchy">
+              <span>Preserve Holes/Hierarchy</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="variable_width">
+              <span>Variable Stroke Width</span>
+            </label>
             <label class="checkbox-label">
               <input type="checkbox" name="adaptive">
               <span>Adaptive Threshold</span>
@@ -195,6 +210,14 @@
           <!-- Lowpoly Options -->
           <fieldset class="options-fieldset" id="lowpoly-options" style="display: none;">
             <legend>Low Poly Options</legend>
+            <label class="checkbox-label">
+              <input type="checkbox" name="adaptive_sampling" checked>
+              <span>Adaptive Sampling (Better Quality)</span>
+            </label>
+            <label>
+              <span>Edge Weight (0.0-1.0):</span>
+              <input type="number" step="0.1" name="edge_weight" value="0.7" min="0" max="1">
+            </label>
             <label>
               <span>Points:</span>
               <input type="number" name="points" value="1000" min="100" step="50">
