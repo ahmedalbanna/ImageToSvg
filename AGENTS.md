@@ -119,6 +119,15 @@
 - `create_drop_shadow_filter()` - Drop shadow filter effects
 - `bgr_to_hex()` - BGR to hex color conversion for SVG
 
+**SVG Pattern Fills**:
+- `create_dots_pattern()` - Polka dot pattern with customizable size/spacing
+- `create_stripes_pattern()` - Parallel stripe pattern with rotation
+- `create_checkerboard_pattern()` - Alternating square pattern
+- `create_crosshatch_pattern()` - Diagonal cross-hatch lines
+- `create_grid_pattern()` - Perpendicular grid pattern
+- `detect_texture_pattern()` - Detect repeating textures in regions
+- `create_pattern_id()` - Generate unique pattern identifiers
+
 ---
 
 ## API Endpoints
@@ -658,17 +667,26 @@ polys = lowpoly(img, num_points=1000, adaptive_sampling=True, edge_weight=0.5)
 
 ### SVG Effects & Features
 
-**New Capabilities**:
-- Linear gradient definitions
-- Radial gradient definitions
-- Drop shadow filters
-- Effect system infrastructure
+**Implemented**:
+- ✅ Linear gradient definitions
+- ✅ Radial gradient definitions  
+- ✅ Drop shadow filters
+- ✅ Pattern fills (dots, stripes, checkerboard, cross-hatch, grid)
+- ✅ Gradient fill detection in flat mode
+- ✅ Effect system infrastructure
+
+**Pattern Types Available**:
+- **Dots**: Polka dot pattern with configurable size and spacing
+- **Stripes**: Parallel lines with rotation support (0-360°)
+- **Checkerboard**: Alternating squares pattern
+- **Cross-hatch**: Diagonal crossing lines for shading
+- **Grid**: Perpendicular grid lines
 
 **Future Enhancements**:
-- Gradient fill detection in flat mode
-- Pattern fills
+- Custom image-based patterns
 - Blur effects
 - Advanced compositing
+- Mesh gradients
 
 ### General Optimizations
 

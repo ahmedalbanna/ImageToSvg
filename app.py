@@ -66,6 +66,8 @@ async def api_convert(
     # Advanced algorithm parameters
     color_method: Optional[str] = Form("kmeans"),
     detect_gradients: Optional[str] = Form(None),
+    detect_patterns: Optional[str] = Form(None),
+    pattern_type: Optional[str] = Form("auto"),
     adaptive_sampling: Optional[str] = Form(None),
     edge_weight: Optional[float] = Form(0.7),
     variable_width: Optional[str] = Form(None),
@@ -159,6 +161,8 @@ async def api_convert(
             color_method=str(color_method) if color_method else "kmeans",
             detect_gradients=(detect_gradients == "true"),
             gradient_threshold=25.0,
+            detect_patterns=(detect_patterns == "true"),
+            pattern_type=str(pattern_type) if pattern_type else "auto",
         )
     elif mode == "line":
         gen = vectorize_line(

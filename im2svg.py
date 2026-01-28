@@ -819,6 +819,8 @@ def vectorize_flat(
     color_method: str = "kmeans",
     detect_gradients: bool = False,
     gradient_threshold: float = 25.0,
+    detect_patterns: bool = False,
+    pattern_type: str = "auto",
 ) -> Iterator[Tuple[str, str, dict]]:
     """Yields (path_d, fill_hex, gradient_info) for flat-color vectorization.
     
@@ -878,15 +880,23 @@ def vectorize_flat(
         if not contours:
             continue
         
-        # Check if this region has a gradient (if detection enabled)
+        # Check if this region has a gradient or pattern (if detection enabled)
         gradient_info = None
-        if detect_gradients and len(contours) > 0:
+        if len(contours) > 0:
             main_contour = max(contours, key=cv2.contourArea)
-            has_gradient = detect_gradient_regions(img_bgr, mask2, gradient_threshold)
             
-            if has_gradient:
-                # Analyze gradient direction and colors
-                gradient_info = analyze_gradient_direction(img_bgr, mask2, main_contour)
+            # Check for patterns first
+            if detect_patterns:
+                pattern_info = detect_texture_pattern(img_bgr, mask2)
+                if pattern_info:
+                    gradient_info = pattern_info
+            
+            # If no pattern, check for gradients
+            if gradient_info is None and detect_gradients:
+                has_gradient = detect_gradient_regions(img_bgr, mask2, gradient_threshold)
+                if has_gradient:
+                    # Analyze gradient direction and colors
+                    gradient_info = analyze_gradient_direction(img_bgr, mask2, main_contour)
             
         d_parts = []
         for cnt in contours:
@@ -1328,6 +1338,175 @@ def lowpoly(
             yield ([(float(x1), float(y1)), (float(x2), float(y2)), (float(x3), float(y3))], fill)
 
 
+# --------------- SVG Patterns ---------------
+
+def create_dots_pattern(pattern_id: str, color: str, bg_color: str = "none", size: int = 10, spacing: int = 20) -> str:
+    """Create SVG dots pattern definition.
+    
+    Args:
+        pattern_id: Unique ID for the pattern
+        color: Dot color (hex)
+        bg_color: Background color (hex or 'none')
+        size: Dot size in pixels
+        spacing: Spacing between dots
+    
+    Returns:
+        SVG pattern definition string
+    """
+    return f'''<pattern id="{pattern_id}" x="0" y="0" width="{spacing}" height="{spacing}" patternUnits="userSpaceOnUse">
+    <rect width="{spacing}" height="{spacing}" fill="{bg_color}"/>
+    <circle cx="{spacing//2}" cy="{spacing//2}" r="{size//2}" fill="{color}"/>
+  </pattern>'''
+
+
+def create_stripes_pattern(pattern_id: str, color1: str, color2: str, width: int = 10, angle: float = 0.0) -> str:
+    """Create SVG stripes pattern definition.
+    
+    Args:
+        pattern_id: Unique ID for the pattern
+        color1: First stripe color (hex)
+        color2: Second stripe color (hex)
+        width: Stripe width in pixels
+        angle: Rotation angle in degrees
+    
+    Returns:
+        SVG pattern definition string
+    """
+    transform = f' patternTransform="rotate({angle})"' if angle != 0 else ''
+    return f'''<pattern id="{pattern_id}" x="0" y="0" width="{width*2}" height="{width*2}" patternUnits="userSpaceOnUse"{transform}>
+    <rect width="{width}" height="{width*2}" fill="{color1}"/>
+    <rect x="{width}" width="{width}" height="{width*2}" fill="{color2}"/>
+  </pattern>'''
+
+
+def create_checkerboard_pattern(pattern_id: str, color1: str, color2: str, size: int = 20) -> str:
+    """Create SVG checkerboard pattern definition.
+    
+    Args:
+        pattern_id: Unique ID for the pattern
+        color1: First square color (hex)
+        color2: Second square color (hex)
+        size: Square size in pixels
+    
+    Returns:
+        SVG pattern definition string
+    """
+    return f'''<pattern id="{pattern_id}" x="0" y="0" width="{size*2}" height="{size*2}" patternUnits="userSpaceOnUse">
+    <rect width="{size}" height="{size}" fill="{color1}"/>
+    <rect x="{size}" width="{size}" height="{size}" fill="{color2}"/>
+    <rect y="{size}" width="{size}" height="{size}" fill="{color2}"/>
+    <rect x="{size}" y="{size}" width="{size}" height="{size}" fill="{color1}"/>
+  </pattern>'''
+
+
+def create_crosshatch_pattern(pattern_id: str, color: str, bg_color: str = "none", spacing: int = 10, stroke_width: int = 2) -> str:
+    """Create SVG crosshatch pattern definition.
+    
+    Args:
+        pattern_id: Unique ID for the pattern
+        color: Line color (hex)
+        bg_color: Background color (hex or 'none')
+        spacing: Spacing between lines
+        stroke_width: Line thickness
+    
+    Returns:
+        SVG pattern definition string
+    """
+    return f'''<pattern id="{pattern_id}" x="0" y="0" width="{spacing}" height="{spacing}" patternUnits="userSpaceOnUse">
+    <rect width="{spacing}" height="{spacing}" fill="{bg_color}"/>
+    <line x1="0" y1="0" x2="{spacing}" y2="{spacing}" stroke="{color}" stroke-width="{stroke_width}"/>
+    <line x1="{spacing}" y1="0" x2="0" y2="{spacing}" stroke="{color}" stroke-width="{stroke_width}"/>
+  </pattern>'''
+
+
+def create_grid_pattern(pattern_id: str, color: str, bg_color: str = "none", spacing: int = 20, stroke_width: int = 1) -> str:
+    """Create SVG grid pattern definition.
+    
+    Args:
+        pattern_id: Unique ID for the pattern
+        color: Grid line color (hex)
+        bg_color: Background color (hex or 'none')
+        spacing: Grid spacing in pixels
+        stroke_width: Line thickness
+    
+    Returns:
+        SVG pattern definition string
+    """
+    return f'''<pattern id="{pattern_id}" x="0" y="0" width="{spacing}" height="{spacing}" patternUnits="userSpaceOnUse">
+    <rect width="{spacing}" height="{spacing}" fill="{bg_color}"/>
+    <path d="M 0,0 L 0,{spacing} M 0,0 L {spacing},0" stroke="{color}" stroke-width="{stroke_width}" fill="none"/>
+  </pattern>'''
+
+
+def detect_texture_pattern(img_bgr: np.ndarray, mask: np.ndarray) -> dict:
+    """Detect if a region has a repeating pattern/texture.
+    
+    Args:
+        img_bgr: Original BGR image
+        mask: Binary mask of region
+    
+    Returns:
+        Dictionary with pattern info or None
+    """
+    # Sample region
+    ys, xs = np.where(mask == 255)
+    if len(xs) < 100:  # Too small to analyze
+        return None
+    
+    # Get bounding box
+    x_min, x_max = xs.min(), xs.max()
+    y_min, y_max = ys.min(), ys.max()
+    
+    region = img_bgr[y_min:y_max+1, x_min:x_max+1]
+    region_mask = mask[y_min:y_max+1, x_min:x_max+1]
+    
+    # Convert to grayscale for pattern analysis
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    
+    # Calculate variance - high variance might indicate texture
+    variance = np.var(gray[region_mask[0:region_mask.shape[0], 0:region_mask.shape[1]] == 255])
+    
+    # Detect edges
+    edges = cv2.Canny(gray, 50, 150)
+    edge_density = np.sum(edges > 0) / (region.shape[0] * region.shape[1])
+    
+    # High edge density + high variance = potential texture
+    if variance > 500 and edge_density > 0.1:
+        # Analyze dominant colors for pattern
+        colors = region[region_mask == 255]
+        if len(colors) > 10:
+            # Simple pattern detection based on color distribution
+            unique_colors = np.unique(colors.reshape(-1, 3), axis=0)
+            
+            if len(unique_colors) == 2:
+                # Two colors - might be dots, stripes, or checkerboard
+                return {
+                    'type': 'stripes',  # Default to stripes
+                    'colors': [unique_colors[0], unique_colors[1]],
+                    'size': 10
+                }
+    
+    return None
+
+
+def create_pattern_id(pattern_type: str, color1: np.ndarray, color2: np.ndarray = None) -> str:
+    """Create unique pattern ID.
+    
+    Args:
+        pattern_type: Type of pattern (dots, stripes, checkerboard, etc.)
+        color1: Primary color (BGR)
+        color2: Secondary color (BGR) if applicable
+    
+    Returns:
+        Unique pattern ID string
+    """
+    c1_hex = f"{color1[2]:02x}{color1[1]:02x}{color1[0]:02x}"
+    if color2 is not None:
+        c2_hex = f"{color2[2]:02x}{color2[1]:02x}{color2[0]:02x}"
+        return f"pattern_{pattern_type}_{c1_hex}_{c2_hex}"
+    return f"pattern_{pattern_type}_{c1_hex}"
+
+
 # --------------- SVG Gradients & Effects ---------------
 
 def bgr_to_hex(bgr: np.ndarray) -> str:
@@ -1490,8 +1669,19 @@ def stream_svg(
             d, fill_hex, gradient_info = shape_data[1], shape_data[2], shape_data[3]
             if gradient_info is not None and isinstance(gradient_info, dict):
                 colors = gradient_info['colors']
-                grad_id = create_gradient_id(colors[0], colors[1], gradient_info['type'])
-                fill_attr = f'url(#{grad_id})'
+                info_type = gradient_info['type']
+                
+                if info_type in ['linear', 'radial']:
+                    fill_id = create_gradient_id(colors[0], colors[1], info_type)
+                elif info_type in ['dots', 'stripes', 'checkerboard', 'crosshatch', 'grid']:
+                    if len(colors) >= 2:
+                        fill_id = create_pattern_id(info_type, colors[0], colors[1])
+                    else:
+                        fill_id = create_pattern_id(info_type, colors[0])
+                else:
+                    fill_id = None
+                
+                fill_attr = f'url(#{fill_id})' if fill_id else fill_hex
             else:
                 fill_attr = fill_hex
             yield f'<path d="{d}" fill="{fill_attr}" stroke="none" fill-rule="{fill_rule}" />'

@@ -104,6 +104,21 @@
               <input type="checkbox" name="detect_gradients" checked>
               <span>Detect & Render Gradients</span>
             </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="detect_patterns">
+              <span>Detect & Render Patterns</span>
+            </label>
+            <label>
+              <span>Pattern Type:</span>
+              <select name="pattern_type">
+                <option value="auto">Auto Detect</option>
+                <option value="dots">Dots</option>
+                <option value="stripes">Stripes</option>
+                <option value="checkerboard">Checkerboard</option>
+                <option value="crosshatch">Cross-hatch</option>
+                <option value="grid">Grid</option>
+              </select>
+            </label>
             <label>
               <span>Colors:</span>
               <input type="number" name="colors" value="8" min="2" max="64">
