@@ -16,6 +16,7 @@ from im2svg import (
     stream_svg,
     preprocess_image,
     apply_artistic_filter,
+    optimize_svg_output,
 )
 
 app = FastAPI(title="im2svg API", version="1.0")
@@ -67,6 +68,10 @@ async def api_convert(
     # Artistic filter parameters
     artistic_filter: Optional[str] = Form(None),
     filter_intensity: Optional[float] = Form(0.5),
+    # SVG optimization parameters
+    optimize_svg: Optional[str] = Form(None),
+    svg_precision: Optional[int] = Form(2),
+    minify_svg: Optional[str] = Form(None),
     # Advanced algorithm parameters
     color_method: Optional[str] = Form("kmeans"),
     detect_gradients: Optional[str] = Form(None),

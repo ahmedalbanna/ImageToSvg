@@ -1796,6 +1796,256 @@ def create_drop_shadow_filter(filter_id: str = "shadow", blur: float = 2.0, opac
   </filter>'''
 
 
+# --------------- SVG Optimization ---------------
+
+def optimize_path_data(path_d: str, precision: int = 2) -> str:
+    """Optimize SVG path data by reducing precision and removing redundancy.
+    
+    Args:
+        path_d: SVG path data string
+        precision: Number of decimal places to keep
+    
+    Returns:
+        Optimized path data string
+    """
+    import re
+    
+    # Round numbers to specified precision
+    def round_number(match):
+        num = float(match.group(0))
+        rounded = round(num, precision)
+        # Remove trailing zeros and decimal point if integer
+        if rounded == int(rounded):
+            return str(int(rounded))
+        return f"{rounded:.{precision}f}".rstrip('0').rstrip('.')
+    
+    # Replace all numbers with rounded versions
+    optimized = re.sub(r'-?\d+\.?\d*', round_number, path_d)
+    
+    # Remove unnecessary spaces
+    optimized = re.sub(r'\s+', ' ', optimized)
+    optimized = re.sub(r'\s*([MLCZmlcz])\s*', r'\1', optimized)
+    
+    # Remove space before negative numbers
+    optimized = re.sub(r'\s+-', '-', optimized)
+    
+    return optimized.strip()
+
+
+def optimize_color(color: str) -> str:
+    """Optimize color representation.
+    
+    Args:
+        color: Color string (hex or named)
+    
+    Returns:
+        Optimized color string
+    """
+    if not color or color == "none":
+        return color
+    
+    # Convert 6-digit hex to 3-digit if possible
+    if color.startswith('#') and len(color) == 7:
+        r, g, b = color[1:3], color[3:5], color[5:7]
+        if r[0] == r[1] and g[0] == g[1] and b[0] == b[1]:
+            return f"#{r[0]}{g[0]}{b[0]}"
+    
+    # Convert common colors to names
+    color_names = {
+        '#000000': 'black', '#000': 'black',
+        '#ffffff': 'white', '#fff': 'white',
+        '#ff0000': 'red', '#f00': 'red',
+        '#00ff00': 'lime', '#0f0': 'lime',
+        '#0000ff': 'blue', '#00f': 'blue',
+    }
+    
+    return color_names.get(color.lower(), color)
+
+
+def merge_adjacent_paths(paths: list, tolerance: float = 0.01) -> list:
+    """Merge adjacent paths with same attributes.
+    
+    Args:
+        paths: List of (path_d, attributes) tuples
+        tolerance: Tolerance for considering colors equal
+    
+    Returns:
+        List of merged paths
+    """
+    if not paths:
+        return paths
+    
+    merged = []
+    current_attrs = None
+    current_paths = []
+    
+    for path_d, attrs in paths:
+        # Check if attributes match
+        if current_attrs == attrs:
+            current_paths.append(path_d)
+        else:
+            # Save previous group
+            if current_paths:
+                merged_d = ' '.join(current_paths)
+                merged.append((merged_d, current_attrs))
+            
+            # Start new group
+            current_attrs = attrs
+            current_paths = [path_d]
+    
+    # Don't forget the last group
+    if current_paths:
+        merged_d = ' '.join(current_paths)
+        merged.append((merged_d, current_attrs))
+    
+    return merged
+
+
+def remove_default_attributes(element: str) -> str:
+    """Remove default SVG attributes to reduce file size.
+    
+    Args:
+        element: SVG element string
+    
+    Returns:
+        Optimized element string
+    """
+    import re
+    
+    # Default values that can be removed
+    defaults = {
+        'fill="black"': '',
+        'fill="none" stroke="none"': 'fill="none"',  # stroke=none is implied
+        'stroke-width="1"': '',  # 1 is default
+        'stroke-linecap="butt"': '',  # butt is default
+        'stroke-linejoin="miter"': '',  # miter is default
+        'fill-opacity="1"': '',  # 1 is default
+        'stroke-opacity="1"': '',  # 1 is default
+        'opacity="1"': '',  # 1 is default
+    }
+    
+    result = element
+    for default_attr, replacement in defaults.items():
+        result = result.replace(default_attr, replacement)
+    
+    # Clean up multiple spaces
+    result = re.sub(r'\s+', ' ', result)
+    result = re.sub(r'\s+/>', '/>', result)
+    result = re.sub(r'\s+>', '>', result)
+    
+    return result
+
+
+def optimize_svg_output(svg_content: str, 
+                       precision: int = 2,
+                       remove_metadata: bool = True,
+                       remove_comments: bool = True,
+                       minify: bool = False) -> str:
+    """Optimize SVG content for smaller file size.
+    
+    Args:
+        svg_content: SVG content string
+        precision: Number of decimal places for coordinates
+        remove_metadata: Remove metadata and editor info
+        remove_comments: Remove XML comments
+        minify: Remove unnecessary whitespace
+    
+    Returns:
+        Optimized SVG string
+    """
+    import re
+    
+    result = svg_content
+    
+    # Remove comments
+    if remove_comments:
+        result = re.sub(r'<!--.*?-->', '', result, flags=re.DOTALL)
+    
+    # Remove metadata, title, desc tags
+    if remove_metadata:
+        result = re.sub(r'<(metadata|title|desc)>.*?</\1>', '', result, flags=re.DOTALL)
+    
+    # Optimize numbers in attributes
+    def optimize_attr_numbers(match):
+        attr = match.group(1)
+        value = match.group(2)
+        # Round numeric values
+        try:
+            num = float(value)
+            rounded = round(num, precision)
+            if rounded == int(rounded):
+                optimized = str(int(rounded))
+            else:
+                optimized = f"{rounded:.{precision}f}".rstrip('0').rstrip('.')
+            return f'{attr}="{optimized}"'
+        except ValueError:
+            return match.group(0)
+    
+    # Optimize coordinate attributes
+    coord_attrs = ['x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 
+                   'width', 'height', 'stroke-width']
+    for attr in coord_attrs:
+        pattern = f'{attr}="(-?\\d+\\.?\\d*)"'
+        result = re.sub(pattern, optimize_attr_numbers, result)
+    
+    # Optimize path data
+    def optimize_path(match):
+        path_d = match.group(1)
+        return f'd="{optimize_path_data(path_d, precision)}"'
+    
+    result = re.sub(r'd="([^"]+)"', optimize_path, result)
+    
+    # Optimize colors
+    def optimize_color_attr(match):
+        color = match.group(1)
+        return f'fill="{optimize_color(color)}"'
+    
+    result = re.sub(r'fill="([^"]+)"', optimize_color_attr, result)
+    
+    def optimize_stroke_color(match):
+        color = match.group(1)
+        return f'stroke="{optimize_color(color)}"'
+    
+    result = re.sub(r'stroke="([^"]+)"', optimize_stroke_color, result)
+    
+    # Remove default attributes
+    result = remove_default_attributes(result)
+    
+    # Minify: remove unnecessary whitespace
+    if minify:
+        # Remove whitespace between tags
+        result = re.sub(r'>\s+<', '><', result)
+        # Remove leading/trailing whitespace
+        result = result.strip()
+        # Keep only single spaces
+        result = re.sub(r'\s+', ' ', result)
+    
+    return result
+
+
+def calculate_svg_size_reduction(original: str, optimized: str) -> dict:
+    """Calculate size reduction statistics.
+    
+    Args:
+        original: Original SVG content
+        optimized: Optimized SVG content
+    
+    Returns:
+        Dictionary with size statistics
+    """
+    original_size = len(original.encode('utf-8'))
+    optimized_size = len(optimized.encode('utf-8'))
+    reduction = original_size - optimized_size
+    reduction_percent = (reduction / original_size * 100) if original_size > 0 else 0
+    
+    return {
+        'original_size': original_size,
+        'optimized_size': optimized_size,
+        'reduction': reduction,
+        'reduction_percent': reduction_percent
+    }
+
+
 # --------------- SVG writer & Streaming ---------------
 
 def stream_svg(
