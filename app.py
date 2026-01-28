@@ -14,6 +14,7 @@ from im2svg import (
     vectorize_line,
     lowpoly,
     stream_svg,
+    preprocess_image,
 )
 
 app = FastAPI(title="im2svg API", version="1.0")
@@ -55,6 +56,13 @@ async def api_upload(file: UploadFile = File(...)):
 
 @app.post("/api/convert")
 async def api_convert(
+    # Preprocessing parameters
+    preprocess: Optional[str] = Form(None),
+    contrast: Optional[str] = Form(None),
+    denoise: Optional[str] = Form(None),
+    sharpen: Optional[str] = Form(None),
+    auto_crop: Optional[str] = Form(None),
+    max_size: Optional[int] = Form(0),
     file: Optional[UploadFile] = File(None),
     file_id: Optional[str] = Form(None),
     mode: str = Form("flat"),
@@ -97,6 +105,33 @@ async def api_convert(
     
     if img is None:
         return Response("Missing image or invalid file_id", status_code=400)
+    
+    # Apply preprocessing if requested
+    if preprocess and preprocess == "true":
+        try:
+            # Safe conversion of max_size parameter
+            max_size_val = 0
+            if max_size is not None:
+                try:
+                    max_size_val = int(max_size)
+                except (ValueError, TypeError):
+                    max_size_val = 0
+            
+            img = preprocess_image(
+                img,
+                contrast=(contrast == "true"),
+                contrast_method="clahe",
+                denoise=(denoise == "true"),
+                denoise_strength=10,
+                sharpen=(sharpen == "true"),
+                sharpen_strength=1.0,
+                auto_crop_enabled=(auto_crop == "true"),
+                max_size=max_size_val
+            )
+        except Exception as e:
+            # If preprocessing fails, log and continue with original image
+            print(f"Warning: Preprocessing failed: {e}")
+            # Continue with original img
     
     h, w = img.shape[:2]
 

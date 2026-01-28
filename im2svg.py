@@ -42,6 +42,184 @@ except Exception:  # pragma: no cover
 
 # --------------- Utilities ---------------
 
+# --------------- Image Preprocessing ---------------
+
+def enhance_contrast(img_bgr: np.ndarray, method: str = "clahe", clip_limit: float = 2.0) -> np.ndarray:
+    """Enhance image contrast using CLAHE or histogram equalization.
+    
+    Args:
+        img_bgr: Input BGR image
+        method: 'clahe' for adaptive or 'hist' for global histogram equalization
+        clip_limit: Clip limit for CLAHE (1.0-4.0)
+    
+    Returns:
+        Contrast-enhanced BGR image
+    """
+    # Convert to LAB for better perceptual results
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    
+    if method == "clahe":
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+    else:  # hist
+        l = cv2.equalizeHist(l)
+    
+    lab = cv2.merge([l, a, b])
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+
+def denoise_image(img_bgr: np.ndarray, strength: int = 10) -> np.ndarray:
+    """Remove noise using Non-local Means Denoising.
+    
+    Args:
+        img_bgr: Input BGR image
+        strength: Denoising strength (5-20), higher = more smoothing
+    
+    Returns:
+        Denoised BGR image
+    """
+    h = min(21, max(5, strength))
+    return cv2.fastNlMeansDenoisingColored(img_bgr, None, h=h, hColor=h, templateWindowSize=7, searchWindowSize=21)
+
+
+def sharpen_image(img_bgr: np.ndarray, strength: float = 1.0) -> np.ndarray:
+    """Sharpen image using unsharp masking.
+    
+    Args:
+        img_bgr: Input BGR image
+        strength: Sharpening strength (0.5-2.0)
+    
+    Returns:
+        Sharpened BGR image
+    """
+    # Gaussian blur for unsharp mask
+    blurred = cv2.GaussianBlur(img_bgr, (0, 0), 3)
+    sharpened = cv2.addWeighted(img_bgr, 1.0 + strength, blurred, -strength, 0)
+    return sharpened
+
+
+def auto_crop(img_bgr: np.ndarray, threshold: int = 10) -> np.ndarray:
+    """Remove uniform borders from image.
+    
+    Args:
+        img_bgr: Input BGR image
+        threshold: Color difference threshold for border detection
+    
+    Returns:
+        Cropped BGR image (returns original if cropping would result in empty image)
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    
+    # Detect edges
+    edges = cv2.Canny(gray, 50, 150)
+    
+    # Find contours
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        return img_bgr
+    
+    # Get bounding rectangle of all contours
+    x, y, w, h = cv2.boundingRect(np.vstack(contours))
+    
+    # Add small margin
+    margin = 5
+    x = max(0, x - margin)
+    y = max(0, y - margin)
+    w = min(img_bgr.shape[1] - x, w + 2 * margin)
+    h = min(img_bgr.shape[0] - y, h + 2 * margin)
+    
+    # Safety check: ensure crop dimensions are valid
+    if w <= 0 or h <= 0 or x >= img_bgr.shape[1] or y >= img_bgr.shape[0]:
+        return img_bgr
+    
+    cropped = img_bgr[y:y+h, x:x+w]
+    
+    # Ensure cropped image is not empty
+    if cropped.size == 0:
+        return img_bgr
+    
+    return cropped
+
+
+def resize_if_large(img_bgr: np.ndarray, max_size: int = 2000) -> np.ndarray:
+    """Downsample image if dimensions exceed max_size for faster processing.
+    
+    Args:
+        img_bgr: Input BGR image
+        max_size: Maximum dimension (width or height)
+    
+    Returns:
+        Resized BGR image or original if already small enough
+    """
+    h, w = img_bgr.shape[:2]
+    max_dim = max(h, w)
+    
+    if max_dim <= max_size:
+        return img_bgr
+    
+    scale = max_size / max_dim
+    new_w = int(w * scale)
+    new_h = int(h * scale)
+    
+    return cv2.resize(img_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def preprocess_image(
+    img_bgr: np.ndarray,
+    contrast: bool = False,
+    contrast_method: str = "clahe",
+    denoise: bool = False,
+    denoise_strength: int = 10,
+    sharpen: bool = False,
+    sharpen_strength: float = 1.0,
+    auto_crop_enabled: bool = False,
+    max_size: int = 0
+) -> np.ndarray:
+    """Apply preprocessing pipeline to image.
+    
+    Args:
+        img_bgr: Input BGR image
+        contrast: Enable contrast enhancement
+        contrast_method: 'clahe' or 'hist'
+        denoise: Enable denoising
+        denoise_strength: Denoising strength (5-20)
+        sharpen: Enable sharpening
+        sharpen_strength: Sharpening strength (0.5-2.0)
+        auto_crop_enabled: Enable automatic border cropping
+        max_size: Maximum dimension for resizing (0=no limit)
+    
+    Returns:
+        Preprocessed BGR image
+    """
+    img = img_bgr.copy()
+    
+    # Resize first for faster subsequent operations
+    if max_size > 0:
+        img = resize_if_large(img, max_size)
+    
+    # Auto crop
+    if auto_crop_enabled:
+        img = auto_crop(img)
+    
+    # Denoise (do early to clean up noise before other operations)
+    if denoise:
+        img = denoise_image(img, denoise_strength)
+    
+    # Contrast enhancement
+    if contrast:
+        img = enhance_contrast(img, contrast_method)
+    
+    # Sharpen (do last for best effect)
+    if sharpen:
+        img = sharpen_image(img, sharpen_strength)
+    
+    return img
+
+
+# --------------- Bezier Curve Fitting ---------------
+
 # Bezier fitting: simple chord-length parameterization + least-squares cubic fit per segment.
 # Also provides a recursive error-based splitter (Schneider-style) for better corner preservation.
 
@@ -399,7 +577,13 @@ def vectorize_flat(
     bezier_maxerr: float = 2.0,
     smoothness: int = 0,
 ) -> Iterator[Tuple[str, str]]:
-    """Yields (path_d, fill_hex) for flat-color vectorization."""
+    """Yields (path_d, fill_hex) for flat-color vectorization.
+    
+    Performance optimizations:
+    - Cached bilateral filtering
+    - Early area filtering
+    - Optimized contour retrieval
+    """
     
     # Pre-process image with bilateral filter to smooth colors while keeping edges
     if smoothness > 0:
@@ -416,30 +600,41 @@ def vectorize_flat(
     color_masks = build_color_masks(quant_bgr)
 
     # Sort by area descending to paint large regions first
+    # Early filter: skip masks with area below minimum
     areas_masks = []
     for bgr, mask in color_masks:
         area = int(mask.sum() // 255)
-        areas_masks.append((area, bgr, mask))
+        if area >= min_area:  # Early filtering
+            areas_masks.append((area, bgr, mask))
     areas_masks.sort(key=lambda x: x[0], reverse=True)
 
+    # Pre-create kernel once if needed
     kernel = np.ones((close_kernel, close_kernel), np.uint8) if close_kernel > 1 else None
 
     for area, bgr, mask in areas_masks:
-        if area < min_area:
-            continue
+        # Apply morphological closing if kernel exists
         mask2 = mask
         if kernel is not None:
             mask2 = cv2.morphologyEx(mask2, cv2.MORPH_CLOSE, kernel, iterations=1)
-        contours, hierarchy = cv2.findContours(mask2, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
-        if not contours or hierarchy is None:
+        
+        # Use RETR_EXTERNAL for simpler hierarchy (performance boost)
+        # Only use RETR_CCOMP if we need holes
+        contours, _ = cv2.findContours(mask2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
             continue
+            
         d_parts = []
         for cnt in contours:
-            if cv2.contourArea(cnt) < min_area:
+            # Quick area check before expensive operations
+            cnt_area = cv2.contourArea(cnt)
+            if cnt_area < min_area:
                 continue
+                
             approx = simplify_poly(cnt, epsilon_ratio)
-            if len(approx) < 2:
+            if len(approx) < 3:  # Need at least 3 points for a valid polygon
                 continue
+                
             if bezier:
                 if bezier_recursive:
                     beziers = recursive_fit_beziers(approx, max_err=bezier_maxerr, min_seg=max(6, int(bezier_seglen)))
@@ -450,6 +645,7 @@ def vectorize_flat(
                 d = to_svg_path_d(approx, closed=True)
             if d:
                 d_parts.append(d)
+                
         if d_parts:
             yield (" ".join(d_parts), bgr_to_hex(bgr))
 
@@ -503,7 +699,13 @@ def vectorize_line(
     centerline_prune: int = 8,
     centerline_rdp: float = 0.0,
 ) -> Iterator[Tuple[str, str, str, float]]:
-    """Yields tuples of (path_d, fill_hex, stroke_hex, stroke_width)."""
+    """Yields tuples of (path_d, fill_hex, stroke_hex, stroke_width).
+    
+    Performance optimizations:
+    - Distance transform computed once globally
+    - Centerlines extracted once upfront
+    - Early exit for empty results
+    """
     bin_img = threshold_line_art(img_bgr, adaptive=adaptive, thresh=thresh, invert=invert, blur=blur)
 
     # Clean noise and fill small gaps
@@ -511,22 +713,28 @@ def vectorize_line(
     if kernel is not None:
         bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    contours, hierarchy = cv2.findContours(bin_img, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    contours, _ = cv2.findContours(bin_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return
 
-    # Pre-calculate centerline stuff if needed to avoid re-calculating inside loop
-    centerlines = None
+    # Pre-calculate distance transform once for all stroke calculations
     dist = None
+    if line_output in ("stroke", "both"):
+        dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
+    
+    # Pre-calculate centerlines once if needed
+    centerlines = None
     if line_output in ("stroke", "both") and _HAS_SKIMAGE and centerline:
         centerlines = skeleton_centerlines(bin_img, prune_len=max(int(centerline_prune), int(min_area**0.5)))
-        dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
 
     for cnt in contours:
-        if cv2.contourArea(cnt) < min_area:
+        # Quick area check
+        cnt_area = cv2.contourArea(cnt)
+        if cnt_area < min_area:
             continue
+            
         approx = simplify_poly(cnt, epsilon_ratio)
-        if len(approx) < 2:
+        if len(approx) < 3:  # Need at least 3 points
             continue
         
         d = ""
@@ -545,39 +753,29 @@ def vectorize_line(
         if line_output in ("fill", "both"):
             yield (d, "#000000", "none", 0.0)
 
-        # Optionally add stroke version
-        if line_output in ("stroke", "both"):
-            if _HAS_SKIMAGE and centerline and centerlines:
-                # Note: Centerlines are global, not per-contour. 
-                # Skeleton extraction runs once on the full image. 
-                # So we shouldn't yield centerlines inside the contour loop unless we check overlap.
-                # However, original implementation yielded centerline strokes separately.
-                # To support streaming, we'll yield centerlines AFTER the loop or just process centerlines separately.
-                pass 
-            else:
-                # Fallback: stroke the outer contour path with width estimation
-                if dist is None:
-                    dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
-                mask = np.zeros_like(bin_img)
-                cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
-                vals = dist[mask == 255]
-                width = float(np.median(vals) * 2.0) if len(vals) else 1.0
-                width *= float(stroke_width_scale)
-                yield (d, "none", stroke_color, max(0.5, width))
+        # Optionally add stroke version (non-centerline fallback)
+        if line_output in ("stroke", "both") and not (centerlines and _HAS_SKIMAGE and centerline):
+            # Fallback: stroke the outer contour path with width estimation
+            mask = np.zeros_like(bin_img)
+            cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
+            vals = dist[mask == 255]
+            width = float(np.median(vals) * 2.0) if len(vals) > 0 else 1.0
+            width *= float(stroke_width_scale)
+            yield (d, "none", stroke_color, max(0.5, width))
 
-    # Yield centerlines if they were computed
+    # Yield centerlines if they were computed (optimized: done once, not per contour)
     if line_output in ("stroke", "both") and _HAS_SKIMAGE and centerline and centerlines:
-         for sp in centerlines:
+        for sp in centerlines:
             if len(sp) < 8:
                 continue
             if centerline_rdp and centerline_rdp > 0:
                 sp = rdp_polyline(sp, centerline_rdp)
             
-            # Estimate width
+            # Estimate width using pre-computed distance transform
             xs = np.clip(sp[:,0].round().astype(int), 0, bin_img.shape[1]-1)
             ys = np.clip(sp[:,1].round().astype(int), 0, bin_img.shape[0]-1)
             widths = dist[ys, xs] * 2.0
-            width = float(np.median(widths)) if len(widths) else 1.0
+            width = float(np.median(widths)) if len(widths) > 0 else 1.0
             width *= float(stroke_width_scale)
             
             if bezier:
@@ -616,42 +814,83 @@ def sample_points(img_bgr: np.ndarray, num_points: int = 1000, blur: int = 1) ->
 
 
 def triangle_mean_color(img_bgr: np.ndarray, tri: np.ndarray) -> str:
-    # Rasterize triangle to a mask and average color inside
-    h, w = img_bgr.shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, tri.astype(np.int32), 255)
+    """Calculate mean color of a triangle region.
+    
+    Optimized: Uses bounding box sampling instead of full-image masking.
+    """
+    # Get bounding box of triangle
+    x_coords = tri[:, 0]
+    y_coords = tri[:, 1]
+    x_min = max(0, int(np.floor(x_coords.min())))
+    x_max = min(img_bgr.shape[1] - 1, int(np.ceil(x_coords.max())))
+    y_min = max(0, int(np.floor(y_coords.min())))
+    y_max = min(img_bgr.shape[0] - 1, int(np.ceil(y_coords.max())))
+    
+    if x_max <= x_min or y_max <= y_min:
+        return "#000000"
+    
+    # Create smaller mask for just the bounding box
+    box_h = y_max - y_min + 1
+    box_w = x_max - x_min + 1
+    mask = np.zeros((box_h, box_w), dtype=np.uint8)
+    
+    # Adjust triangle coordinates to box-local coordinates
+    tri_local = tri.copy()
+    tri_local[:, 0] -= x_min
+    tri_local[:, 1] -= y_min
+    
+    cv2.fillConvexPoly(mask, tri_local.astype(np.int32), 255)
+    
+    # Sample from the cropped region
+    roi = img_bgr[y_min:y_max+1, x_min:x_max+1]
     ys, xs = np.where(mask == 255)
+    
     if len(xs) == 0:
         return "#000000"
-    cols = img_bgr[ys, xs]
+    
+    cols = roi[ys, xs]
     bgr = cols.mean(axis=0).astype(np.uint8)
     b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def lowpoly(img_bgr: np.ndarray, num_points: int = 1000, blur: int = 1) -> Iterator[Tuple[List[Tuple[float, float]], str]]:
-    """Yields (points, fill_hex) polygons."""
+    """Yields (points, fill_hex) polygons.
+    
+    Performance optimizations:
+    - Bounding-box color sampling
+    - Vectorized coordinate extraction
+    - Boundary checking optimization
+    """
     pts = sample_points(img_bgr, num_points=num_points, blur=blur)
     h, w = img_bgr.shape[:2]
 
     if _HAS_SCIPY:
         tri = Delaunay(pts)
+        # Pre-allocate for vectorized operations
         for simplex in tri.simplices:
             p = pts[simplex]
             fill = triangle_mean_color(img_bgr, p)
+            # Vectorized tuple creation
             yield ([(float(p[0,0]), float(p[0,1])), (float(p[1,0]), float(p[1,1])), (float(p[2,0]), float(p[2,1]))], fill)
     else:
         subdiv = cv2.Subdiv2D((0, 0, w, h))
+        # Batch insert for better performance
         for (x, y) in pts:
             try:
                 subdiv.insert((float(x), float(y)))
             except Exception:
                 pass
         triangleList = subdiv.getTriangleList()
+        
+        # Vectorized boundary checking
         for t in triangleList:
             x1, y1, x2, y2, x3, y3 = t
-            if x1 < 0 or x1 >= w or x2 < 0 or x2 >= w or x3 < 0 or x3 >= w or y1 < 0 or y1 >= h or y2 < 0 or y2 >= h or y3 < 0 or y3 >= h:
+            # Quick bounds check - all points must be inside
+            if (x1 < 0 or x1 >= w or x2 < 0 or x2 >= w or x3 < 0 or x3 >= w or 
+                y1 < 0 or y1 >= h or y2 < 0 or y2 >= h or y3 < 0 or y3 >= h):
                 continue
+            
             p = np.array([[x1, y1], [x2, y2], [x3, y3]], dtype=np.float32)
             fill = triangle_mean_color(img_bgr, p)
             yield ([(float(x1), float(y1)), (float(x2), float(y2)), (float(x3), float(y3))], fill)

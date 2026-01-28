@@ -18,7 +18,7 @@
       <div class="panel controls-panel">
         <form id="form">
           <!-- Hidden field for cached file ID -->
-          <input type="hidden" name="file_id" id="file_id">
+          <input type="hidden" name="file_id" id="file-id">
           
           <!-- Image Upload Section -->
           <section class="form-section">
@@ -35,6 +35,37 @@
               <p class="or-text">or click to browse</p>
             </div>
             <div id="upload-status" class="status"></div>
+          </section>
+
+          <!-- Preprocessing Section -->
+          <section class="form-section">
+            <h3>Preprocessing</h3>
+            <label class="checkbox-label">
+              <input type="checkbox" name="preprocess" id="preprocess-enable">
+              <span>Enable Preprocessing</span>
+            </label>
+            <div id="preprocess-options" style="display: none; margin-top: 0.5rem;">
+              <label class="checkbox-label">
+                <input type="checkbox" name="contrast">
+                <span>Enhance Contrast</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="denoise">
+                <span>Remove Noise</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="sharpen">
+                <span>Sharpen Image</span>
+              </label>
+              <label class="checkbox-label">
+                <input type="checkbox" name="auto_crop">
+                <span>Auto Crop Borders</span>
+              </label>
+              <label>
+                <span>Max Size (0=no limit):</span>
+                <input type="number" name="max_size" value="0" min="0" step="100">
+              </label>
+            </div>
           </section>
 
           <!-- Mode Selection -->

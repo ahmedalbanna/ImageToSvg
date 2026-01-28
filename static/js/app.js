@@ -3,7 +3,7 @@ const form = document.getElementById('form');
 const preview = document.getElementById('preview');
 const svgtext = document.getElementById('svgtext');
 const fileInput = document.getElementById('file-input');
-const fileIdInput = document.getElementById('file_id');
+const fileIdInput = document.getElementById('file-id');
 const uploadStatus = document.getElementById('upload-status');
 const convertBtn = document.getElementById('convert-btn');
 const copyBtn = document.getElementById('copy-btn');
@@ -15,6 +15,10 @@ const flatOptions = document.getElementById('flat-options');
 const lineOptions = document.getElementById('line-options');
 const bezierOptions = document.getElementById('bezier-options');
 const lowpolyOptions = document.getElementById('lowpoly-options');
+
+// Preprocessing
+const preprocessEnable = document.getElementById('preprocess-enable');
+const preprocessOptions = document.getElementById('preprocess-options');
 
 // Preset configurations
 const PRESETS = {
@@ -116,7 +120,7 @@ form.addEventListener('submit', async (e) => {
   const fd = new FormData(form);
   
   // Normalize checkbox values
-  ['adaptive', 'invert', 'bezier', 'bezier_recursive', 'centerline'].forEach(name => {
+  ['adaptive', 'invert', 'bezier', 'bezier_recursive', 'centerline', 'preprocess', 'contrast', 'denoise', 'sharpen', 'auto_crop'].forEach(name => {
     const checkbox = form.elements[name];
     if (checkbox) {
       fd.set(name, checkbox.checked ? 'true' : 'false');
@@ -124,7 +128,17 @@ form.addEventListener('submit', async (e) => {
   });
   
   try {
-    const resp = await fetch('/api/convert', { method: 'POST', body: fd });
+    // Add timeout for slow conversions
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+    
+    const resp = await fetch('/api/convert', { 
+      method: 'POST', 
+      body: fd,
+      signal: controller.signal 
+    });
+    
+    clearTimeout(timeoutId);
     
     if (!resp.ok) {
       const errorText = await resp.text();
@@ -142,13 +156,21 @@ form.addEventListener('submit', async (e) => {
     
     // Show action buttons
     copyBtn.style.display = 'inline-flex';
-    downloadBtn.style.display = 'inline-flex';
+    if (downloadBtn) {
+      downloadBtn.style.display = 'inline-flex';
+    }
     
     // Success feedback
     setUploadStatus('✓ Conversion complete', 'ready');
   } catch (e) {
-    alert(`Conversion error: ${e.message}`);
-    setUploadStatus(`✗ Conversion failed`, 'error');
+    let errorMsg = 'Conversion failed';
+    if (e.name === 'AbortError') {
+      errorMsg = 'Conversion timed out (60s limit)';
+    } else if (e.message) {
+      errorMsg = e.message;
+    }
+    alert(`Conversion error: ${errorMsg}`);
+    setUploadStatus(`✗ ${errorMsg}`, 'error');
     console.error('Conversion error:', e);
   } finally {
     convertBtn.disabled = false;
@@ -178,7 +200,9 @@ copyBtn.addEventListener('click', async () => {
  * Download SVG button
  */
 const downloadBtn = document.getElementById('download-btn');
-downloadBtn.addEventListener('click', downloadSVG);
+if (downloadBtn) {
+  downloadBtn.addEventListener('click', downloadSVG);
+}
 
 /**
  * Drag and drop handlers
@@ -272,6 +296,15 @@ if (qualitySelect) {
  * Mode select change handler
  */
 modeSelect.addEventListener('change', updateOptionsVisibility);
+
+/**
+ * Preprocessing toggle handler
+ */
+if (preprocessEnable) {
+  preprocessEnable.addEventListener('change', (e) => {
+    preprocessOptions.style.display = e.target.checked ? 'block' : 'none';
+  });
+}
 
 /**
  * Initialize
