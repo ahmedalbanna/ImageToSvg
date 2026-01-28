@@ -20,7 +20,7 @@ Limitations:
 """
 import argparse
 import sys
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Iterator, Union, Any
 
 import cv2
 import numpy as np
@@ -88,9 +88,7 @@ def _fit_cubic_bezier(points: np.ndarray) -> Optional[np.ndarray]:
     except np.linalg.LinAlgError:
         return None
 
-    P1 = coeff_x[0] * np.array([1.0, 0.0]) + coeff_x[1] * np.array([0.0, 0.0])
-    P2 = coeff_y[0] * np.array([0.0, 0.0]) + coeff_y[1] * np.array([1.0, 0.0])
-    # The above shortcut is incorrect; construct P1,P2 per axis properly
+    # Construct P1,P2 per axis properly
     P1 = np.array([coeff_x[0], coeff_y[0]])
     P2 = np.array([coeff_x[1], coeff_y[1]])
 
@@ -399,11 +397,21 @@ def vectorize_flat(
     bezier_seglen: int = 16,
     bezier_recursive: bool = False,
     bezier_maxerr: float = 2.0,
-) -> List[Tuple[str, str]]:
-    """Return list of (path_d, fill_hex) for flat-color vectorization.
-    If --bezier is used, output paths are cubic Beziers instead of polylines.
-    """
-    """Return list of (path_d, fill_hex) for flat-color vectorization."""
+    smoothness: int = 0,
+) -> Iterator[Tuple[str, str]]:
+    """Yields (path_d, fill_hex) for flat-color vectorization."""
+    
+    # Pre-process image with bilateral filter to smooth colors while keeping edges
+    if smoothness > 0:
+        d = max(3, smoothness)
+        sigma_color = float(smoothness) * 10.0
+        sigma_space = float(smoothness) * 2.0
+        iters = 1 if smoothness < 5 else 2
+        temp = img_bgr
+        for _ in range(iters):
+            temp = cv2.bilateralFilter(temp, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space)
+        img_bgr = temp
+
     quant_bgr, _label_map = kmeans_quantize_bgr(img_bgr, k=k_colors)
     color_masks = build_color_masks(quant_bgr)
 
@@ -414,7 +422,6 @@ def vectorize_flat(
         areas_masks.append((area, bgr, mask))
     areas_masks.sort(key=lambda x: x[0], reverse=True)
 
-    paths = []
     kernel = np.ones((close_kernel, close_kernel), np.uint8) if close_kernel > 1 else None
 
     for area, bgr, mask in areas_masks:
@@ -444,8 +451,7 @@ def vectorize_flat(
             if d:
                 d_parts.append(d)
         if d_parts:
-            paths.append((" ".join(d_parts), bgr_to_hex(bgr)))
-    return paths
+            yield (" ".join(d_parts), bgr_to_hex(bgr))
 
 
 # --------------- Line-art pipeline ---------------
@@ -496,12 +502,8 @@ def vectorize_line(
     centerline: bool = True,
     centerline_prune: int = 8,
     centerline_rdp: float = 0.0,
-) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str, float]]]:
-    """Return (paths_fill, paths_stroke).
-    paths_fill: list of (path_d, fill_hex)
-    paths_stroke: list of (path_d, stroke_hex, stroke_width)
-    """
-    """Return list of (path_d, fill_hex, stroke_hex). By default emit filled shapes (stroke none)."""
+) -> Iterator[Tuple[str, str, str, float]]:
+    """Yields tuples of (path_d, fill_hex, stroke_hex, stroke_width)."""
     bin_img = threshold_line_art(img_bgr, adaptive=adaptive, thresh=thresh, invert=invert, blur=blur)
 
     # Clean noise and fill small gaps
@@ -510,10 +512,15 @@ def vectorize_line(
         bin_img = cv2.morphologyEx(bin_img, cv2.MORPH_CLOSE, kernel, iterations=1)
 
     contours, hierarchy = cv2.findContours(bin_img, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
-    paths_fill: List[Tuple[str, str]] = []
-    paths_stroke: List[Tuple[str, str, float]] = []
     if not contours:
-        return paths_fill, paths_stroke
+        return
+
+    # Pre-calculate centerline stuff if needed to avoid re-calculating inside loop
+    centerlines = None
+    dist = None
+    if line_output in ("stroke", "both") and _HAS_SKIMAGE and centerline:
+        centerlines = skeleton_centerlines(bin_img, prune_len=max(int(centerline_prune), int(min_area**0.5)))
+        dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
 
     for cnt in contours:
         if cv2.contourArea(cnt) < min_area:
@@ -521,6 +528,8 @@ def vectorize_line(
         approx = simplify_poly(cnt, epsilon_ratio)
         if len(approx) < 2:
             continue
+        
+        d = ""
         if bezier:
             if bezier_recursive:
                 beziers = recursive_fit_beziers(approx, max_err=bezier_maxerr, min_seg=max(6, int(bezier_seglen)))
@@ -529,49 +538,59 @@ def vectorize_line(
             d = beziers_to_path_d(beziers, closed=True)
         else:
             d = to_svg_path_d(approx, closed=True)
+            
         if not d:
             continue
+
         if line_output in ("fill", "both"):
-            paths_fill.append((d, "#000000"))
+            yield (d, "#000000", "none", 0.0)
+
         # Optionally add stroke version
         if line_output in ("stroke", "both"):
-            if _HAS_SKIMAGE and centerline:
-                # Skeletonize and trace centerlines via graph tracing
-                centerlines = skeleton_centerlines(bin_img, prune_len=max(int(centerline_prune), int(min_area**0.5)))
-                dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
-                for sp in centerlines:
-                    if len(sp) < 8:
-                        continue
-                    if centerline_rdp and centerline_rdp > 0:
-                        sp = rdp_polyline(sp, centerline_rdp)
-                    # Estimate width along skeleton polyline
-                    xs = np.clip(sp[:,0].round().astype(int), 0, bin_img.shape[1]-1)
-                    ys = np.clip(sp[:,1].round().astype(int), 0, bin_img.shape[0]-1)
-                    widths = dist[ys, xs] * 2.0
-                    width = float(np.median(widths)) if len(widths) else 1.0
-                    width *= float(stroke_width_scale)
-                    # Optional curve smoothing of centerline
-                    if bezier:
-                        if bezier_recursive:
-                            beziers = recursive_fit_beziers(sp, max_err=bezier_maxerr, min_seg=max(6, int(bezier_seglen)))
-                        else:
-                            beziers = polyline_to_beziers(sp, seg_len=bezier_seglen)
-                        sd = beziers_to_path_d(beziers, closed=False)
-                    else:
-                        sd = to_svg_path_d(sp, closed=False)
-                    if sd:
-                        paths_stroke.append((sd, stroke_color, max(0.5, width)))
+            if _HAS_SKIMAGE and centerline and centerlines:
+                # Note: Centerlines are global, not per-contour. 
+                # Skeleton extraction runs once on the full image. 
+                # So we shouldn't yield centerlines inside the contour loop unless we check overlap.
+                # However, original implementation yielded centerline strokes separately.
+                # To support streaming, we'll yield centerlines AFTER the loop or just process centerlines separately.
+                pass 
             else:
                 # Fallback: stroke the outer contour path with width estimation
-                dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
+                if dist is None:
+                    dist = cv2.distanceTransform(bin_img, cv2.DIST_L2, 3)
                 mask = np.zeros_like(bin_img)
                 cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
                 vals = dist[mask == 255]
                 width = float(np.median(vals) * 2.0) if len(vals) else 1.0
                 width *= float(stroke_width_scale)
-                paths_stroke.append((d, stroke_color, max(0.5, width)))
+                yield (d, "none", stroke_color, max(0.5, width))
 
-    return paths_fill, paths_stroke
+    # Yield centerlines if they were computed
+    if line_output in ("stroke", "both") and _HAS_SKIMAGE and centerline and centerlines:
+         for sp in centerlines:
+            if len(sp) < 8:
+                continue
+            if centerline_rdp and centerline_rdp > 0:
+                sp = rdp_polyline(sp, centerline_rdp)
+            
+            # Estimate width
+            xs = np.clip(sp[:,0].round().astype(int), 0, bin_img.shape[1]-1)
+            ys = np.clip(sp[:,1].round().astype(int), 0, bin_img.shape[0]-1)
+            widths = dist[ys, xs] * 2.0
+            width = float(np.median(widths)) if len(widths) else 1.0
+            width *= float(stroke_width_scale)
+            
+            if bezier:
+                if bezier_recursive:
+                    beziers = recursive_fit_beziers(sp, max_err=bezier_maxerr, min_seg=max(6, int(bezier_seglen)))
+                else:
+                    beziers = polyline_to_beziers(sp, seg_len=bezier_seglen)
+                sd = beziers_to_path_d(beziers, closed=False)
+            else:
+                sd = to_svg_path_d(sp, closed=False)
+            
+            if sd:
+                yield (sd, "none", stroke_color, max(0.5, width))
 
 
 # --------------- Low-poly pipeline ---------------
@@ -610,17 +629,17 @@ def triangle_mean_color(img_bgr: np.ndarray, tri: np.ndarray) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def lowpoly(img_bgr: np.ndarray, num_points: int = 1000, blur: int = 1):
+def lowpoly(img_bgr: np.ndarray, num_points: int = 1000, blur: int = 1) -> Iterator[Tuple[List[Tuple[float, float]], str]]:
+    """Yields (points, fill_hex) polygons."""
     pts = sample_points(img_bgr, num_points=num_points, blur=blur)
     h, w = img_bgr.shape[:2]
-    polygons = []  # List[(points, fill_hex)]
 
     if _HAS_SCIPY:
         tri = Delaunay(pts)
         for simplex in tri.simplices:
             p = pts[simplex]
             fill = triangle_mean_color(img_bgr, p)
-            polygons.append(([(float(p[0,0]), float(p[0,1])), (float(p[1,0]), float(p[1,1])), (float(p[2,0]), float(p[2,1]))], fill))
+            yield ([(float(p[0,0]), float(p[0,1])), (float(p[1,0]), float(p[1,1])), (float(p[2,0]), float(p[2,1]))], fill)
     else:
         subdiv = cv2.Subdiv2D((0, 0, w, h))
         for (x, y) in pts:
@@ -635,65 +654,76 @@ def lowpoly(img_bgr: np.ndarray, num_points: int = 1000, blur: int = 1):
                 continue
             p = np.array([[x1, y1], [x2, y2], [x3, y3]], dtype=np.float32)
             fill = triangle_mean_color(img_bgr, p)
-            polygons.append(([(float(x1), float(y1)), (float(x2), float(y2)), (float(x3), float(y3))], fill))
+            yield ([(float(x1), float(y1)), (float(x2), float(y2)), (float(x3), float(y3))], fill)
 
-    return polygons
 
-# --------------- SVG writer ---------------
+# --------------- SVG writer & Streaming ---------------
 
-def _build_svg(width: int,
-               height: int,
-               paths_fill: List[Tuple[str, str]],
-               paths_stroke: Optional[List[Tuple[str, str, float]]] = None,
-               fill_rule: str = "evenodd",
-               polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None) -> svgwrite.Drawing:
-    dwg = svgwrite.Drawing(size=(width, height), viewBox=f"0 0 {width} {height}")
-    dwg.attribs["shape-rendering"] = "geometricPrecision"
+def stream_svg(
+    width: int,
+    height: int,
+    shapes_iterator: Iterator[Any],
+    fill_rule: str = "evenodd"
+) -> Iterator[str]:
+    """Yield SVG parts as strings: header, shapes (paths/polygons), footer.
+    shapes_iterator: yields either:
+      - (d, fill_hex)  [flat mode]
+      - (d, fill_hex, stroke_hex, stroke_width) [line mode]
+      - (points_list, fill_hex) [lowpoly]
+    """
+    yield f'<svg baseProfile="full" height="{height}" version="1.1" viewBox="0 0 {width} {height}" width="{width}" xmlns="http://www.w3.org/2000/svg" xmlns:ev="http://www.w3.org/2001/xml-events" xmlns:xlink="http://www.w3.org/1999/xlink" shape-rendering="geometricPrecision">'
+    
+    for item in shapes_iterator:
+        if len(item) == 2:
+            # Check if it's path or polygon
+            first, second = item
+            if isinstance(first, list):
+                # Polygon: (points_list, fill_hex)
+                pts_str = " ".join([f"{x:.2f},{y:.2f}" for x,y in first])
+                yield f'<polygon points="{pts_str}" fill="{second}" stroke="none" />'
+            else:
+                # Path: (d, fill_hex)
+                yield f'<path d="{first}" fill="{second}" stroke="none" fill-rule="{fill_rule}" />'
+        elif len(item) == 4:
+            # Line mode: (d, fill_hex, stroke_hex, stroke_width)
+            d, fill, stroke, width = item
+            yield f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" stroke-linejoin="round" stroke-linecap="round" fill-rule="{fill_rule}" />'
 
-    # Filled paths
-    for d, fill_hex in paths_fill:
-        if not d:
-            continue
-        p = dwg.path(d=d, fill=fill_hex, stroke="none", fill_rule=fill_rule)
-        dwg.add(p)
+    yield '</svg>'
 
-    # Stroked paths (optional)
-    if paths_stroke:
-        for d, stroke_hex, stroke_width in paths_stroke:
-            p = dwg.path(d=d, fill="none", stroke=stroke_hex, stroke_width=stroke_width,
-                         stroke_linejoin="round", stroke_linecap="round")
-            dwg.add(p)
-
-    # Polygon layer (e.g., low-poly)
-    if polygons:
-        for pts, fill_hex in polygons:
-            dwg.add(dwg.polygon(points=pts, fill=fill_hex, stroke="none"))
-    return dwg
-
+def build_svg_string(width: int,
+                     height: int,
+                     paths_fill: List[Tuple[str, str]] = None,
+                     paths_stroke: Optional[List[Tuple[str, str, float]]] = None,
+                     fill_rule: str = "evenodd",
+                     polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None) -> str:
+    """Helper to maintain backward compatibility with non-streaming calls."""
+    # Convert lists to a unified iterator
+    def unified_iter():
+        if paths_fill:
+            for d, fill in paths_fill:
+                yield (d, fill)
+        if paths_stroke:
+            for d, stroke, width in paths_stroke:
+                yield (d, "none", stroke, width)
+        if polygons:
+            for pts, fill in polygons:
+                yield (pts, fill)
+                
+    return "".join(stream_svg(width, height, unified_iter(), fill_rule))
 
 def write_svg(
     output_path: str,
     width: int,
     height: int,
-    paths_fill: List[Tuple[str, str]],
+    paths_fill: List[Tuple[str, str]] = None,
     paths_stroke: List[Tuple[str, str, float]] = None,
     fill_rule: str = "evenodd",
     polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None,
 ):
-    dwg = _build_svg(width, height, paths_fill, paths_stroke, fill_rule, polygons)
-    dwg.filename = output_path
-    dwg.save()
-
-
-def build_svg_string(width: int,
-                     height: int,
-                     paths_fill: List[Tuple[str, str]],
-                     paths_stroke: Optional[List[Tuple[str, str, float]]] = None,
-                     fill_rule: str = "evenodd",
-                     polygons: Optional[List[Tuple[List[Tuple[float, float]], str]]] = None) -> str:
-    """Build an SVG string for embedding or API responses."""
-    dwg = _build_svg(width, height, paths_fill, paths_stroke, fill_rule, polygons)
-    return dwg.tostring()
+    svg_content = build_svg_string(width, height, paths_fill, paths_stroke, fill_rule, polygons)
+    with open(output_path, "w") as f:
+        f.write(svg_content)
 
 
 # --------------- CLI ---------------
@@ -737,14 +767,15 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("input", help="Input image path (png/jpg/etc)")
     p.add_argument("-o", "--output", required=True, help="Output SVG path")
     p.add_argument("--mode", choices=["flat", "line", "lowpoly"], default="flat", help="Vectorization mode")
-    p.add_argument("--quality", choices=["low","medium","high"], help="Quality preset that sets smoothing and detail parameters (overrides related flags)")
+    p.add_argument("--quality", choices=["low","medium","high"], help="Quality preset")
 
     # Flat mode
     p.add_argument("--colors", type=int, default=8, help="Number of colors for quantization (flat mode)")
     p.add_argument("--min-area", type=int, default=20, help="Minimum contour area to keep (px^2)")
     p.add_argument("--epsilon", type=float, default=0.003, help="RDP simplification ratio relative to perimeter")
-    p.add_argument("--close-kernel", type=int, default=3, help="Morphological closing kernel size (0/1 to disable)")
+    p.add_argument("--close-kernel", type=int, default=3, help="Morphological closing kernel size")
     p.add_argument("--fill-rule", choices=["nonzero", "evenodd"], default="evenodd", help="Fill rule for complex paths")
+    p.add_argument("--smoothness", type=int, default=0, help="Bilateral filter smoothness (0-10)")
 
     # Line mode
     p.add_argument("--adaptive", action="store_true", help="Use adaptive thresholding (line mode)")
@@ -763,8 +794,8 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     p.add_argument("--stroke-color", default="#000000", help="Stroke color for line mode")
     p.add_argument("--stroke-width-scale", type=float, default=1.0, help="Scale factor for estimated stroke width")
     p.add_argument("--no-centerline", action="store_true", help="Disable skeletonized centerline stroke tracing")
-    p.add_argument("--centerline-prune", type=int, default=8, help="Prune centerline paths shorter than this length (pixels)")
-    p.add_argument("--centerline-rdp", type=float, default=0.0, help="RDP simplify epsilon for centerline polylines (0 disables)")
+    p.add_argument("--centerline-prune", type=int, default=8, help="Prune centerline paths shorter than this length")
+    p.add_argument("--centerline-rdp", type=float, default=0.0, help="RDP simplify epsilon for centerline polylines")
 
     # Low-poly mode options
     p.add_argument("--points", type=int, default=1000, help="Number of feature/sample points for low-poly mode")
@@ -783,8 +814,9 @@ def main(argv: List[str]) -> int:
         return 2
     h, w = img_bgr.shape[:2]
 
+    # Use the new streaming approach directly for CLI as well
     if args.mode == "flat":
-        paths_fill = vectorize_flat(
+        gen = vectorize_flat(
            img_bgr,
            k_colors=max(2, int(args.colors)),
            min_area=max(1, int(args.min_area)),
@@ -795,10 +827,10 @@ def main(argv: List[str]) -> int:
            bezier_seglen=max(4, int(args.bezier_seglen)),
            bezier_recursive=bool(args.bezier_recursive),
            bezier_maxerr=float(args.bezier_maxerr),
-       )
-        write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=None, fill_rule=args.fill_rule)
-    elif args.mode == "line":  # line
-        paths_fill, paths_stroke = vectorize_line(
+           smoothness=int(args.smoothness),
+        )
+    elif args.mode == "line":
+        gen = vectorize_line(
             img_bgr,
             adaptive=bool(args.adaptive),
             thresh=int(args.thresh),
@@ -818,10 +850,13 @@ def main(argv: List[str]) -> int:
             centerline_prune=int(args.centerline_prune),
             centerline_rdp=float(args.centerline_rdp),
         )
-        write_svg(args.output, w, h, paths_fill=paths_fill, paths_stroke=paths_stroke, fill_rule=args.fill_rule)
     else:  # lowpoly
-        polygons = lowpoly(img_bgr, num_points=int(args.points), blur=int(args.tri_blur))
-        write_svg(args.output, w, h, paths_fill=[], polygons=polygons, fill_rule=args.fill_rule)
+        gen = lowpoly(img_bgr, num_points=int(args.points), blur=int(args.tri_blur))
+
+    # Stream to file
+    with open(args.output, "w") as f:
+        for chunk in stream_svg(w, h, gen, fill_rule=args.fill_rule):
+            f.write(chunk)
 
     print(f"Wrote {args.output}")
     return 0

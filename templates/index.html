@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>im2svg – Image to SVG Converter</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>im2svg – Image to SVG</h1>
+      <p class="subtitle">Convert your images to scalable vector graphics</p>
+    </header>
+
+    <div class="row">
+      <!-- Left Panel: Controls -->
+      <div class="panel controls-panel">
+        <form id="form">
+          <!-- Hidden field for cached file ID -->
+          <input type="hidden" name="file_id" id="file_id">
+          
+          <!-- Image Upload Section -->
+          <section class="form-section">
+            <h3>Upload Image</h3>
+            <label class="file-label">
+              <span>Choose Image:</span>
+              <input type="file" name="file" id="file-input" accept="image/*" required>
+            </label>
+            <div id="drop-zone" class="drop-zone">
+              <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+              </svg>
+              <p>Drag & drop an image here</p>
+              <p class="or-text">or click to browse</p>
+            </div>
+            <div id="upload-status" class="status"></div>
+          </section>
+
+          <!-- Mode Selection -->
+          <section class="form-section">
+            <h3>Conversion Mode</h3>
+            <label>
+              <span>Mode:</span>
+              <select name="mode" id="mode-select">
+                <option value="flat">Flat (Color regions)</option>
+                <option value="line">Line (Sketch/Drawing)</option>
+                <option value="lowpoly">Low Poly (Triangles)</option>
+              </select>
+            </label>
+            <label>
+              <span>Quality Preset:</span>
+              <select name="quality">
+                <option value="">(default)</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+            </label>
+          </section>
+
+          <!-- Flat Options -->
+          <fieldset class="options-fieldset" id="flat-options">
+            <legend>Flat Mode Options</legend>
+            <label>
+              <span>Colors:</span>
+              <input type="number" name="colors" value="8" min="2" max="64">
+            </label>
+            <label>
+              <span>Min Area:</span>
+              <input type="number" name="min_area" value="20" min="1">
+            </label>
+            <label>
+              <span>Epsilon:</span>
+              <input type="number" step="0.0005" name="epsilon" value="0.003">
+            </label>
+            <label>
+              <span>Close Kernel:</span>
+              <input type="number" name="close_kernel" value="3" min="0">
+            </label>
+            <label>
+              <span>Smoothness:</span>
+              <input type="number" name="smoothness" value="0" min="0" max="10">
+            </label>
+            <label>
+              <span>Fill Rule:</span>
+              <select name="fill_rule">
+                <option value="evenodd">Even-Odd</option>
+                <option value="nonzero">Non-Zero</option>
+              </select>
+            </label>
+          </fieldset>
+
+          <!-- Line Options -->
+          <fieldset class="options-fieldset" id="line-options" style="display: none;">
+            <legend>Line Mode Options</legend>
+            <label class="checkbox-label">
+              <input type="checkbox" name="adaptive">
+              <span>Adaptive Threshold</span>
+            </label>
+            <label>
+              <span>Threshold:</span>
+              <input type="number" name="thresh" value="-1" min="-1" max="255">
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="invert" checked>
+              <span>Invert Colors</span>
+            </label>
+            <label>
+              <span>Blur:</span>
+              <input type="number" name="blur" value="0" min="0">
+            </label>
+            <label>
+              <span>Line Output:</span>
+              <select name="line_output">
+                <option value="fill">Fill</option>
+                <option value="stroke">Stroke</option>
+                <option value="both">Both</option>
+              </select>
+            </label>
+            <label>
+              <span>Stroke Color:</span>
+              <input type="color" name="stroke_color" value="#000000">
+            </label>
+            <label>
+              <span>Stroke Width Scale:</span>
+              <input type="number" step="0.1" name="stroke_width_scale" value="1.0">
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="centerline" checked>
+              <span>Centerline</span>
+            </label>
+            <label>
+              <span>Centerline Prune:</span>
+              <input type="number" name="centerline_prune" value="8">
+            </label>
+            <label>
+              <span>Centerline RDP:</span>
+              <input type="number" step="0.5" name="centerline_rdp" value="0">
+            </label>
+          </fieldset>
+
+          <!-- Bezier Options -->
+          <fieldset class="options-fieldset" id="bezier-options">
+            <legend>Bezier Curve Options</legend>
+            <label class="checkbox-label">
+              <input type="checkbox" name="bezier">
+              <span>Enable Bezier Curves</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="bezier_recursive">
+              <span>Recursive Bezier</span>
+            </label>
+            <label>
+              <span>Segment Length:</span>
+              <input type="number" name="bezier_seglen" value="16" min="4">
+            </label>
+            <label>
+              <span>Max Error:</span>
+              <input type="number" step="0.1" name="bezier_maxerr" value="2.0">
+            </label>
+          </fieldset>
+
+          <!-- Lowpoly Options -->
+          <fieldset class="options-fieldset" id="lowpoly-options" style="display: none;">
+            <legend>Low Poly Options</legend>
+            <label>
+              <span>Points:</span>
+              <input type="number" name="points" value="1000" min="100" step="50">
+            </label>
+            <label>
+              <span>Triangle Blur:</span>
+              <input type="number" name="tri_blur" value="1" min="0">
+            </label>
+          </fieldset>
+
+          <button type="submit" id="convert-btn" class="btn btn-primary">
+            <span class="btn-text">Convert to SVG</span>
+          </button>
+        </form>
+      </div>
+
+      <!-- Right Panel: Preview -->
+      <div class="panel preview-panel">
+        <section class="preview-section">
+          <h3>Preview</h3>
+          <div id="preview" class="preview-container">
+            <div class="preview-placeholder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="8.5" cy="8.5" r="1.5"/>
+                <polyline points="21 15 16 10 5 21"/>
+              </svg>
+              <p>Your SVG preview will appear here</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="svg-section">
+          <div class="section-header">
+            <h3>SVG Code</h3>
+            <div class="button-group">
+              <button type="button" id="copy-btn" class="btn btn-secondary" style="display: none;">
+                📋 Copy
+              </button>
+              <button type="button" id="download-btn" class="btn btn-secondary" style="display: none;">
+                💾 Download
+              </button>
+            </div>
+          </div>
+          <textarea id="svgtext" readonly placeholder="SVG code will appear here..."></textarea>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
