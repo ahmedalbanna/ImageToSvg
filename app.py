@@ -65,6 +65,7 @@ async def api_convert(
     max_size: Optional[int] = Form(0),
     # Advanced algorithm parameters
     color_method: Optional[str] = Form("kmeans"),
+    detect_gradients: Optional[str] = Form(None),
     adaptive_sampling: Optional[str] = Form(None),
     edge_weight: Optional[float] = Form(0.7),
     variable_width: Optional[str] = Form(None),
@@ -156,7 +157,8 @@ async def api_convert(
             bezier_maxerr=float(bezier_maxerr),
             smoothness=max(0, int(smoothness)),
             color_method=str(color_method) if color_method else "kmeans",
-            detect_gradients=False,  # Future feature
+            detect_gradients=(detect_gradients == "true"),
+            gradient_threshold=25.0,
         )
     elif mode == "line":
         gen = vectorize_line(

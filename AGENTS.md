@@ -59,11 +59,15 @@
   - K-means clustering (default, balanced quality)
   - Median cut algorithm (better for few colors, 6-7x faster)
   - Octree quantization (future enhancement)
+- **Gradient fill detection and rendering**:
+  - Automatic detection of linear and radial gradients
+  - Intelligent direction analysis (horizontal, vertical, radial)
+  - Native SVG gradient definitions
+  - Significantly improves quality for images with color transitions
 - Region extraction with morphological operations
 - Contour detection and polygon simplification
 - Optional Bezier curve fitting
-- Gradient detection for better quality
-- Best for: logos, icons, cartoons, flat illustrations
+- Best for: logos, icons, cartoons, flat illustrations, buttons with gradients
 
 **2. Line Mode** (`vectorize_line`):
 - Adaptive or fixed thresholding
@@ -97,6 +101,8 @@
 - `median_cut_quantize()` - Median cut algorithm (6-7x faster than k-means)
 - `octree_quantize()` - Octree color quantization (future)
 - `detect_gradient_regions()` - Identify gradient vs flat color regions
+- `analyze_gradient_direction()` - Analyze gradient type, angle, and colors
+- `create_gradient_id()` - Generate unique gradient identifiers
 
 **Advanced Line Detection**:
 - `detect_contour_hierarchy()` - Analyze parent-child contour relationships
@@ -107,10 +113,11 @@
 - `adaptive_point_sampling()` - Edge-aware point placement
 - `sample_points()` - Standard point sampling (original method)
 
-**SVG Effects**:
-- `create_linear_gradient()` - Linear gradient definitions
-- `create_radial_gradient()` - Radial gradient definitions
+**SVG Effects & Gradients**:
+- `create_linear_gradient()` - Linear gradient definitions with angle support
+- `create_radial_gradient()` - Radial gradient definitions with center positioning
 - `create_drop_shadow_filter()` - Drop shadow filter effects
+- `bgr_to_hex()` - BGR to hex color conversion for SVG
 
 ---
 
@@ -555,7 +562,12 @@ Preprocessing options are available in the web interface:
 - **Multiple Color Quantization Methods**:
   - K-means: Balanced quality, good for most images
   - Median cut: 6-7x faster, better for images with few distinct colors
-- Gradient detection capability (future: gradient fill support)
+- **Gradient Fill Support** (NEW! ✨):
+  - Automatic detection of gradients in color regions
+  - Supports linear gradients (horizontal, vertical, diagonal)
+  - Supports radial gradients (center to edge)
+  - Native SVG gradient rendering (smaller files, scalable)
+  - Configurable detection threshold
 - Better color preservation for specific image types
 
 **Performance Improvements**:
@@ -576,6 +588,12 @@ paths = vectorize_flat(img, k_colors=8, color_method="median_cut")
 
 # Use k-means for best quality (default)
 paths = vectorize_flat(img, k_colors=8, color_method="kmeans")
+
+# Enable gradient detection and rendering
+paths = vectorize_flat(img, k_colors=8, detect_gradients=True, gradient_threshold=25.0)
+
+# Disable gradients for pure flat colors
+paths = vectorize_flat(img, k_colors=8, detect_gradients=False)
 ```
 
 ### Line Mode Enhancements

@@ -97,8 +97,12 @@
               <span>Color Method:</span>
               <select name="color_method">
                 <option value="kmeans">K-Means (default)</option>
-                <option value="median_cut">Median Cut</option>
+                <option value="median_cut">Median Cut (faster)</option>
               </select>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="detect_gradients" checked>
+              <span>Detect & Render Gradients</span>
             </label>
             <label>
               <span>Colors:</span>

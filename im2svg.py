@@ -687,6 +687,123 @@ def detect_gradient_regions(img_bgr: np.ndarray, mask: np.ndarray, threshold: fl
     return std_dev > threshold
 
 
+def analyze_gradient_direction(img_bgr: np.ndarray, mask: np.ndarray, contour: np.ndarray) -> dict:
+    """Analyze gradient direction and colors in a region.
+    
+    Args:
+        img_bgr: Original BGR image
+        mask: Binary mask of region
+        contour: Contour points defining the region
+    
+    Returns:
+        Dictionary with gradient info: {type, angle, colors, positions}
+    """
+    # Get bounding box of region
+    x, y, w, h = cv2.boundingRect(contour)
+    
+    if w < 3 or h < 3:
+        return None
+    
+    # Extract region
+    region_mask = mask[y:y+h, x:x+w]
+    region_img = img_bgr[y:y+h, x:x+w]
+    
+    # Sample colors along different directions
+    ys, xs = np.where(region_mask == 255)
+    if len(xs) < 20:
+        return None
+    
+    colors = region_img[ys, xs]
+    positions = np.column_stack([xs, ys])
+    
+    # Determine gradient type and direction
+    # Try horizontal gradient
+    horiz_correlation = np.corrcoef(positions[:, 0], colors[:, 0])[0, 1]
+    # Try vertical gradient
+    vert_correlation = np.corrcoef(positions[:, 1], colors[:, 0])[0, 1]
+    
+    # Check for radial gradient (distance from center)
+    center_x, center_y = w / 2, h / 2
+    distances = np.sqrt((positions[:, 0] - center_x)**2 + (positions[:, 1] - center_y)**2)
+    radial_correlation = np.corrcoef(distances, colors[:, 0])[0, 1]
+    
+    gradient_type = "linear"
+    angle = 0.0
+    
+    if abs(radial_correlation) > max(abs(horiz_correlation), abs(vert_correlation)):
+        # Radial gradient detected
+        gradient_type = "radial"
+        
+        # Find colors at center and edge
+        center_dist_threshold = np.percentile(distances, 10)
+        edge_dist_threshold = np.percentile(distances, 90)
+        
+        center_colors = colors[distances <= center_dist_threshold]
+        edge_colors = colors[distances >= edge_dist_threshold]
+        
+        if len(center_colors) > 0 and len(edge_colors) > 0:
+            color1 = np.median(center_colors, axis=0).astype(np.uint8)
+            color2 = np.median(edge_colors, axis=0).astype(np.uint8)
+            
+            return {
+                'type': 'radial',
+                'colors': [color1, color2],
+                'center': (x + center_x, y + center_y),
+                'radius': max(w, h) / 2
+            }
+    else:
+        # Linear gradient
+        if abs(horiz_correlation) > abs(vert_correlation):
+            # Horizontal gradient
+            angle = 90.0 if horiz_correlation < 0 else 270.0
+            
+            # Sample left and right colors
+            left_threshold = np.percentile(positions[:, 0], 10)
+            right_threshold = np.percentile(positions[:, 0], 90)
+            
+            left_colors = colors[positions[:, 0] <= left_threshold]
+            right_colors = colors[positions[:, 0] >= right_threshold]
+        else:
+            # Vertical gradient
+            angle = 180.0 if vert_correlation < 0 else 0.0
+            
+            # Sample top and bottom colors
+            top_threshold = np.percentile(positions[:, 1], 10)
+            bottom_threshold = np.percentile(positions[:, 1], 90)
+            
+            left_colors = colors[positions[:, 1] <= top_threshold]
+            right_colors = colors[positions[:, 1] >= bottom_threshold]
+        
+        if len(left_colors) > 0 and len(right_colors) > 0:
+            color1 = np.median(left_colors, axis=0).astype(np.uint8)
+            color2 = np.median(right_colors, axis=0).astype(np.uint8)
+            
+            return {
+                'type': 'linear',
+                'angle': angle,
+                'colors': [color1, color2],
+                'bbox': (x, y, w, h)
+            }
+    
+    return None
+
+
+def create_gradient_id(color1: np.ndarray, color2: np.ndarray, gradient_type: str) -> str:
+    """Create unique gradient ID based on colors.
+    
+    Args:
+        color1: First color (BGR)
+        color2: Second color (BGR)
+        gradient_type: 'linear' or 'radial'
+    
+    Returns:
+        Unique gradient ID string
+    """
+    c1_hex = f"{color1[2]:02x}{color1[1]:02x}{color1[0]:02x}"
+    c2_hex = f"{color2[2]:02x}{color2[1]:02x}{color2[0]:02x}"
+    return f"grad_{gradient_type}_{c1_hex}_{c2_hex}"
+
+
 def vectorize_flat(
     img_bgr: np.ndarray,
     k_colors: int = 8,
@@ -701,12 +818,13 @@ def vectorize_flat(
     smoothness: int = 0,
     color_method: str = "kmeans",
     detect_gradients: bool = False,
-) -> Iterator[Tuple[str, str]]:
-    """Yields (path_d, fill_hex) for flat-color vectorization.
+    gradient_threshold: float = 25.0,
+) -> Iterator[Tuple[str, str, dict]]:
+    """Yields (path_d, fill_hex, gradient_info) for flat-color vectorization.
     
     Enhancements:
     - Multiple color quantization methods
-    - Gradient detection for better quality
+    - Gradient fill detection and rendering
     - Contour hierarchy support
     - Optimized performance
     
@@ -714,6 +832,10 @@ def vectorize_flat(
     - Cached bilateral filtering
     - Early area filtering
     - Optimized contour retrieval
+    
+    Returns:
+        Iterator yielding tuples of (path_d, fill_hex, gradient_info)
+        gradient_info is None for solid colors, or a dict with gradient data
     """
     
     # Pre-process image with bilateral filter to smooth colors while keeping edges
@@ -755,6 +877,16 @@ def vectorize_flat(
         
         if not contours:
             continue
+        
+        # Check if this region has a gradient (if detection enabled)
+        gradient_info = None
+        if detect_gradients and len(contours) > 0:
+            main_contour = max(contours, key=cv2.contourArea)
+            has_gradient = detect_gradient_regions(img_bgr, mask2, gradient_threshold)
+            
+            if has_gradient:
+                # Analyze gradient direction and colors
+                gradient_info = analyze_gradient_direction(img_bgr, mask2, main_contour)
             
         d_parts = []
         for cnt in contours:
@@ -779,7 +911,7 @@ def vectorize_flat(
                 d_parts.append(d)
                 
         if d_parts:
-            yield (" ".join(d_parts), bgr_to_hex(bgr))
+            yield (" ".join(d_parts), bgr_to_hex(bgr), gradient_info)
 
 
 # --------------- Line-art pipeline ---------------
@@ -1198,6 +1330,19 @@ def lowpoly(
 
 # --------------- SVG Gradients & Effects ---------------
 
+def bgr_to_hex(bgr: np.ndarray) -> str:
+    """Convert BGR color to hex string.
+    
+    Args:
+        bgr: BGR color array [B, G, R]
+    
+    Returns:
+        Hex color string like '#rrggbb'
+    """
+    b, g, r = int(bgr[0]), int(bgr[1]), int(bgr[2])
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 def create_linear_gradient(gradient_id: str, color1: str, color2: str, angle: float = 0.0) -> str:
     """Create SVG linear gradient definition.
     
@@ -1205,7 +1350,7 @@ def create_linear_gradient(gradient_id: str, color1: str, color2: str, angle: fl
         gradient_id: Unique ID for the gradient
         color1: Start color (hex)
         color2: End color (hex)
-        angle: Gradient angle in degrees (0=horizontal)
+        angle: Gradient angle in degrees (0=top to bottom, 90=left to right)
     
     Returns:
         SVG gradient definition string
@@ -1213,27 +1358,42 @@ def create_linear_gradient(gradient_id: str, color1: str, color2: str, angle: fl
     # Convert angle to x1,y1,x2,y2 coordinates
     import math
     rad = math.radians(angle)
-    x2 = math.cos(rad)
-    y2 = math.sin(rad)
     
-    return f'''<linearGradient id="{gradient_id}" x1="0" y1="0" x2="{x2:.2f}" y2="{y2:.2f}">
+    # For SVG gradients: 0° = vertical (top to bottom)
+    if angle == 0.0:  # Top to bottom
+        x1, y1, x2, y2 = 0, 0, 0, 1
+    elif angle == 90.0:  # Left to right
+        x1, y1, x2, y2 = 0, 0, 1, 0
+    elif angle == 180.0:  # Bottom to top
+        x1, y1, x2, y2 = 0, 1, 0, 0
+    elif angle == 270.0:  # Right to left
+        x1, y1, x2, y2 = 1, 0, 0, 0
+    else:
+        # Generic angle
+        x1, y1 = 0, 0
+        x2 = math.cos(rad)
+        y2 = math.sin(rad)
+    
+    return f'''<linearGradient id="{gradient_id}" x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}">
     <stop offset="0%" stop-color="{color1}"/>
     <stop offset="100%" stop-color="{color2}"/>
   </linearGradient>'''
 
 
-def create_radial_gradient(gradient_id: str, color1: str, color2: str) -> str:
+def create_radial_gradient(gradient_id: str, color1: str, color2: str, cx: float = 0.5, cy: float = 0.5) -> str:
     """Create SVG radial gradient definition.
     
     Args:
         gradient_id: Unique ID for the gradient
         color1: Center color (hex)
         color2: Edge color (hex)
+        cx: Center x position (0.0-1.0)
+        cy: Center y position (0.0-1.0)
     
     Returns:
         SVG gradient definition string
     """
-    return f'''<radialGradient id="{gradient_id}">
+    return f'''<radialGradient id="{gradient_id}" cx="{cx}" cy="{cy}">
     <stop offset="0%" stop-color="{color1}"/>
     <stop offset="100%" stop-color="{color2}"/>
   </radialGradient>'''
@@ -1272,37 +1432,88 @@ def stream_svg(
     fill_rule: str = "evenodd",
     enable_effects: bool = False
 ) -> Iterator[str]:
-    """Yield SVG parts as strings: header, defs (gradients/filters), shapes, footer.
-    shapes_iterator: yields either:
-      - (d, fill_hex)  [flat mode]
-      - (d, fill_hex, stroke_hex, stroke_width) [line mode]
-      - (points_list, fill_hex) [lowpoly]
-    """
+    """Yield SVG parts as strings: header, defs (gradients/filters), shapes, footer."""
     yield f'<svg baseProfile="full" height="{height}" version="1.1" viewBox="0 0 {width} {height}" width="{width}" xmlns="http://www.w3.org/2000/svg" xmlns:ev="http://www.w3.org/2001/xml-events" xmlns:xlink="http://www.w3.org/1999/xlink" shape-rendering="geometricPrecision">'
     
-    # Add defs section for gradients and effects if enabled
-    if enable_effects:
-        yield '<defs>'
-        yield create_drop_shadow_filter("shadow", 2.0, 0.5)
-        yield '</defs>'
+    # Collect all shapes and gradients first
+    gradients = {}
+    shapes = []
     
     for item in shapes_iterator:
-        if len(item) == 2:
+        item_len = len(item)
+        
+        if item_len == 3:
+            # Flat mode: (d, fill_hex, gradient_info) where gradient_info can be None or dict
+            d, fill_hex, gradient_info = item
+            shapes.append(('path_grad', d, fill_hex, gradient_info))
+            
+            # Collect gradient definition if present
+            if gradient_info is not None and isinstance(gradient_info, dict):
+                colors = gradient_info['colors']
+                grad_id = create_gradient_id(colors[0], colors[1], gradient_info['type'])
+                if grad_id not in gradients:
+                    color1_hex = bgr_to_hex(colors[0])
+                    color2_hex = bgr_to_hex(colors[1])
+                    if gradient_info['type'] == 'linear':
+                        gradients[grad_id] = create_linear_gradient(grad_id, color1_hex, color2_hex, gradient_info['angle'])
+                    elif gradient_info['type'] == 'radial':
+                        gradients[grad_id] = create_radial_gradient(grad_id, color1_hex, color2_hex)
+        
+        elif item_len == 4:
+            # Line mode: (d, fill_hex, stroke_hex, stroke_width)
+            shapes.append(('line', item[0], item[1], item[2], item[3]))
+        
+        elif item_len == 2:
             # Check if it's path or polygon
             first, second = item
             if isinstance(first, list):
                 # Polygon: (points_list, fill_hex)
-                pts_str = " ".join([f"{x:.2f},{y:.2f}" for x,y in first])
-                yield f'<polygon points="{pts_str}" fill="{second}" stroke="none" />'
+                shapes.append(('polygon', first, second))
             else:
-                # Path: (d, fill_hex)
-                yield f'<path d="{first}" fill="{second}" stroke="none" fill-rule="{fill_rule}" />'
-        elif len(item) == 4:
-            # Line mode: (d, fill_hex, stroke_hex, stroke_width)
-            d, fill, stroke, width = item
-            yield f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{width}" stroke-linejoin="round" stroke-linecap="round" fill-rule="{fill_rule}" />'
+                # Path: (d, fill_hex) - old format
+                shapes.append(('path', first, second))
+    
+    # Output defs section if we have gradients or effects
+    if gradients or enable_effects:
+        yield '<defs>'
+        for grad_def in gradients.values():
+            yield grad_def
+        if enable_effects:
+            yield create_drop_shadow_filter("shadow", 2.0, 0.5)
+        yield '</defs>'
+    
+    # Output all shapes
+    for shape_data in shapes:
+        shape_type = shape_data[0]
+        
+        if shape_type == 'path_grad':
+            d, fill_hex, gradient_info = shape_data[1], shape_data[2], shape_data[3]
+            if gradient_info is not None and isinstance(gradient_info, dict):
+                colors = gradient_info['colors']
+                grad_id = create_gradient_id(colors[0], colors[1], gradient_info['type'])
+                fill_attr = f'url(#{grad_id})'
+            else:
+                fill_attr = fill_hex
+            yield f'<path d="{d}" fill="{fill_attr}" stroke="none" fill-rule="{fill_rule}" />'
+        
+        elif shape_type == 'path':
+            d, fill = shape_data[1], shape_data[2]
+            yield f'<path d="{d}" fill="{fill}" stroke="none" fill-rule="{fill_rule}" />'
+        
+        elif shape_type == 'polygon':
+            pts, fill = shape_data[1], shape_data[2]
+            pts_str = " ".join([f"{x:.2f},{y:.2f}" for x,y in pts])
+            yield f'<polygon points="{pts_str}" fill="{fill}" stroke="none" />'
+        
+        elif shape_type == 'line':
+            d, fill, stroke, width = shape_data[1], shape_data[2], shape_data[3], shape_data[4]
+            if fill != "none":
+                yield f'<path d="{d}" fill="{fill}" stroke="none" fill-rule="{fill_rule}" />'
+            if stroke != "none" and width > 0:
+                yield f'<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{width:.2f}" stroke-linecap="round" stroke-linejoin="round" />'
 
     yield '</svg>'
+
 
 def build_svg_string(width: int,
                      height: int,
