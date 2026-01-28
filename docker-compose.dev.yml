@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  im2svg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: im2svg_dev
+    ports:
+      - "8005:8005"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8005
+      - PYTHONUNBUFFERED=1
+      - DEBUG=1
+    volumes:
+      # Mount all source code for hot-reload development
+      - ./:/app
+    command: uvicorn app:app --host 0.0.0.0 --port 8005 --reload
+    restart: unless-stopped
+    networks:
+      - im2svg_network
+
+networks:
+  im2svg_network:
+    driver: bridge
