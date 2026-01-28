@@ -42,6 +42,200 @@ except Exception:  # pragma: no cover
 
 # --------------- Utilities ---------------
 
+# --------------- Artistic Filters ---------------
+
+def apply_watercolor_effect(img_bgr: np.ndarray, intensity: float = 0.5) -> np.ndarray:
+    """Apply watercolor painting effect to image.
+    
+    Args:
+        img_bgr: Input BGR image
+        intensity: Effect intensity (0.0-1.0), higher = more watercolor-like
+    
+    Returns:
+        Watercolor-styled BGR image
+    """
+    # Reduce details with bilateral filter
+    filtered = cv2.bilateralFilter(img_bgr, d=9, sigmaColor=90, sigmaSpace=90)
+    
+    # Apply median blur for color bleeding effect
+    median_ksize = max(3, int(5 * intensity))
+    if median_ksize % 2 == 0:
+        median_ksize += 1
+    median = cv2.medianBlur(filtered, median_ksize)
+    
+    # Enhance edges slightly for watercolor borders
+    edges = cv2.Canny(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), 50, 150)
+    edges = cv2.dilate(edges, np.ones((2, 2), np.uint8))
+    
+    # Blend original with median for watercolor look
+    alpha = 0.3 + (intensity * 0.4)  # 0.3 to 0.7 range
+    result = cv2.addWeighted(median, alpha, filtered, 1 - alpha, 0)
+    
+    # Darken edges slightly for watercolor paper effect
+    edges_3d = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    result = np.where(edges_3d > 0, result * 0.8, result).astype(np.uint8)
+    
+    # Reduce color depth for paint-like appearance
+    color_levels = max(32, int(128 * (1.0 - intensity * 0.5)))
+    result = (result // color_levels) * color_levels
+    
+    return result
+
+
+def apply_sketch_effect(img_bgr: np.ndarray, intensity: float = 0.5, colored: bool = False) -> np.ndarray:
+    """Apply pencil sketch effect to image.
+    
+    Args:
+        img_bgr: Input BGR image
+        intensity: Sketch line intensity (0.0-1.0), higher = darker lines
+        colored: If True, creates colored pencil sketch
+    
+    Returns:
+        Sketch-styled BGR image
+    """
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    
+    # Invert the image
+    inverted = 255 - gray
+    
+    # Blur the inverted image
+    blur_value = max(5, int(21 * intensity))
+    if blur_value % 2 == 0:
+        blur_value += 1
+    blurred = cv2.GaussianBlur(inverted, (blur_value, blur_value), 0)
+    
+    # Invert the blurred image
+    inverted_blur = 255 - blurred
+    
+    # Divide gray by inverted blur to get sketch effect
+    sketch = cv2.divide(gray, inverted_blur, scale=256.0)
+    
+    if colored:
+        # Apply sketch as luminance to preserve colors
+        # Convert to LAB color space
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        
+        # Replace L channel with sketch
+        l = sketch
+        
+        # Merge and convert back
+        lab = cv2.merge([l, a, b])
+        result = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        
+        # Reduce saturation for pencil look
+        hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        s = (s * 0.6).astype(np.uint8)
+        hsv = cv2.merge([h, s, v])
+        result = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    else:
+        # Black and white sketch
+        result = cv2.cvtColor(sketch, cv2.COLOR_GRAY2BGR)
+    
+    return result
+
+
+def apply_oil_painting_effect(img_bgr: np.ndarray, size: int = 7, dynRatio: int = 1) -> np.ndarray:
+    """Apply oil painting effect to image.
+    
+    Args:
+        img_bgr: Input BGR image
+        size: Brush size (3-10), larger = more painterly
+        dynRatio: Dynamic range ratio (1-10)
+    
+    Returns:
+        Oil painting styled BGR image
+    """
+    # OpenCV has a built-in oil painting effect
+    try:
+        # Try using cv2.xphoto module if available
+        result = cv2.xphoto.oilPainting(img_bgr, size, dynRatio)
+        return result
+    except (AttributeError, cv2.error):
+        # Fallback: manual oil painting effect
+        # Apply bilateral filter multiple times for oil paint look
+        result = img_bgr.copy()
+        
+        for _ in range(2):
+            result = cv2.bilateralFilter(result, d=9, sigmaColor=90, sigmaSpace=90)
+        
+        # Apply median blur
+        ksize = max(3, size)
+        if ksize % 2 == 0:
+            ksize += 1
+        result = cv2.medianBlur(result, ksize)
+        
+        # Enhance color saturation for oil paint vibrancy
+        hsv = cv2.cvtColor(result, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        s = np.clip(s * 1.3, 0, 255).astype(np.uint8)
+        hsv = cv2.merge([h, s, v])
+        result = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        
+        # Quantize colors for paint-like effect
+        color_levels = 32
+        result = (result // color_levels) * color_levels
+        
+        return result
+
+
+def apply_cartoon_effect(img_bgr: np.ndarray, num_bilateral: int = 7, edge_threshold: int = 80) -> np.ndarray:
+    """Apply cartoon/cel-shading effect to image.
+    
+    Args:
+        img_bgr: Input BGR image
+        num_bilateral: Number of bilateral filter iterations (5-10)
+        edge_threshold: Edge detection threshold (50-150)
+    
+    Returns:
+        Cartoon-styled BGR image
+    """
+    # Apply bilateral filter multiple times to reduce details
+    result = img_bgr.copy()
+    for _ in range(num_bilateral):
+        result = cv2.bilateralFilter(result, d=9, sigmaColor=9, sigmaSpace=7)
+    
+    # Detect and emphasize edges
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.medianBlur(gray, 7)
+    edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
+                                   cv2.THRESH_BINARY, blockSize=9, C=edge_threshold)
+    
+    # Convert edges to BGR and combine with filtered image
+    edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    result = cv2.bitwise_and(result, edges)
+    
+    return result
+
+
+def apply_artistic_filter(img_bgr: np.ndarray, filter_type: str, intensity: float = 0.5) -> np.ndarray:
+    """Apply artistic filter to image.
+    
+    Args:
+        img_bgr: Input BGR image
+        filter_type: Type of filter ('watercolor', 'sketch', 'colored_sketch', 'oil', 'cartoon')
+        intensity: Filter intensity (0.0-1.0)
+    
+    Returns:
+        Filtered BGR image
+    """
+    if filter_type == "watercolor":
+        return apply_watercolor_effect(img_bgr, intensity)
+    elif filter_type == "sketch":
+        return apply_sketch_effect(img_bgr, intensity, colored=False)
+    elif filter_type == "colored_sketch":
+        return apply_sketch_effect(img_bgr, intensity, colored=True)
+    elif filter_type == "oil":
+        size = max(3, int(7 * intensity))
+        return apply_oil_painting_effect(img_bgr, size=size, dynRatio=1)
+    elif filter_type == "cartoon":
+        num_bilateral = max(5, int(7 + 3 * intensity))
+        return apply_cartoon_effect(img_bgr, num_bilateral=num_bilateral)
+    else:
+        return img_bgr
+
+
 # --------------- Image Preprocessing ---------------
 
 def enhance_contrast(img_bgr: np.ndarray, method: str = "clahe", clip_limit: float = 2.0) -> np.ndarray:

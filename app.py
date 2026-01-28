@@ -15,6 +15,7 @@ from im2svg import (
     lowpoly,
     stream_svg,
     preprocess_image,
+    apply_artistic_filter,
 )
 
 app = FastAPI(title="im2svg API", version="1.0")
@@ -63,6 +64,9 @@ async def api_convert(
     sharpen: Optional[str] = Form(None),
     auto_crop: Optional[str] = Form(None),
     max_size: Optional[int] = Form(0),
+    # Artistic filter parameters
+    artistic_filter: Optional[str] = Form(None),
+    filter_intensity: Optional[float] = Form(0.5),
     # Advanced algorithm parameters
     color_method: Optional[str] = Form("kmeans"),
     detect_gradients: Optional[str] = Form(None),
@@ -114,6 +118,16 @@ async def api_convert(
     
     if img is None:
         return Response("Missing image or invalid file_id", status_code=400)
+    
+    # Apply artistic filter first if requested
+    if artistic_filter and artistic_filter != "none":
+        try:
+            intensity = float(filter_intensity) if filter_intensity else 0.5
+            intensity = max(0.0, min(1.0, intensity))  # Clamp to 0-1
+            img = apply_artistic_filter(img, artistic_filter, intensity)
+        except Exception as e:
+            print(f"Warning: Artistic filter failed: {e}")
+            # Continue with original image
     
     # Apply preprocessing if requested
     if preprocess and preprocess == "true":

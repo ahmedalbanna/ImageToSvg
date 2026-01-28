@@ -37,6 +37,26 @@
             <div id="upload-status" class="status"></div>
           </section>
 
+          <!-- Artistic Filters Section -->
+          <section class="form-section">
+            <h3>Artistic Filters</h3>
+            <label>
+              <span>Filter Type:</span>
+              <select name="artistic_filter">
+                <option value="none">None</option>
+                <option value="watercolor">Watercolor</option>
+                <option value="sketch">Sketch (B&W)</option>
+                <option value="colored_sketch">Colored Sketch</option>
+                <option value="oil">Oil Painting</option>
+                <option value="cartoon">Cartoon</option>
+              </select>
+            </label>
+            <label>
+              <span>Filter Intensity (0.0-1.0):</span>
+              <input type="number" step="0.1" name="filter_intensity" value="0.5" min="0" max="1">
+            </label>
+          </section>
+
           <!-- Preprocessing Section -->
           <section class="form-section">
             <h3>Preprocessing</h3>
